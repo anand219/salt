@@ -45,7 +45,6 @@ htmlcov/
 tags
 
 # ignore Vagrant file
-Vagrantfile
 .vagrant
 
 # Compiled translation files should not be VCS'ed
