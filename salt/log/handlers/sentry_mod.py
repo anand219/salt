@@ -65,10 +65,11 @@
 
 
     .. _`DSN`: http://raven.readthedocs.org/en/latest/config/index.html#the-sentry-dsn
-    .. _`Sentry`: http://getsentry.com
+    .. _`Sentry`: https://getsentry.com
     .. _`Raven`: http://raven.readthedocs.org
     .. _`Raven client documentation`: http://raven.readthedocs.org/en/latest/config/index.html#client-arguments
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import logging
@@ -110,7 +111,7 @@ def setup_handlers():
                 'project': dsn_config['SENTRY_PROJECT'],
                 'servers': dsn_config['SENTRY_SERVERS'],
                 'public_key': dsn_config['SENTRY_PUBLIC_KEY'],
-                'private_key': dsn_config['SENTRY_SECRET_KEY']
+                'secret_key': dsn_config['SENTRY_SECRET_KEY']
             })
         except ValueError as exc:
             log.info(
@@ -119,7 +120,7 @@ def setup_handlers():
             )
 
     # Allow options to be overridden if previously parsed, or define them
-    for key in ('project', 'servers', 'public_key', 'private_key'):
+    for key in ('project', 'servers', 'public_key', 'secret_key'):
         config_value = get_config_value(key)
         if config_value is None and key not in options:
             log.debug(
@@ -170,7 +171,10 @@ def setup_handlers():
         # processors: A list of processors to apply to events before sending
         # them to the Sentry server. Useful for sending additional global state
         # data or sanitizing data that you want to keep off of the server.
-        'processors': get_config_value('processors')
+        'processors': get_config_value('processors'),
+
+        # dsn: Ensure the DSN is passed into the client
+        'dsn': dsn
     })
 
     client = raven.Client(**options)

@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 '''
     :codeauthor: :email:`Pedro Algarvio (pedro@algarvio.me)`
-    :copyright: © 2013 by the SaltStack Team, see AUTHORS for more details
-    :license: Apache 2.0, see LICENSE for more details.
 
 
     tests.unit.utils.warnings_test
@@ -12,6 +10,7 @@
 '''
 
 # Import python libs
+from __future__ import absolute_import
 import sys
 import warnings
 
@@ -72,7 +71,7 @@ class WarnUntilTestCase(TestCase):
                 RuntimeError,
                 r'The warning triggered on filename \'(.*)warnings_test.py\', '
                 r'line number ([\d]+), is supposed to be shown until version '
-                r'\'0.17.0\' is released. Current version is now \'0.17.0\'. '
+                r'0.17.0 is released. Current version is now 0.17.0. '
                 r'Please remove the warning.'):
             raise_warning(_version_info_=(0, 17, 0))
 
@@ -81,8 +80,8 @@ class WarnUntilTestCase(TestCase):
                 RuntimeError,
                 r'The warning triggered on filename \'(.*)warnings_test.py\', '
                 r'line number ([\d]+), is supposed to be shown until version '
-                r'\'Hydrogen((.*))\' is released. Current version is now '
-                r'\'([\d.]+)\'. Please remove the warning.'):
+                r'(.*) is released. Current version is now '
+                r'([\d.]+). Please remove the warning.'):
             raise_named_version_warning(_version_info_=(sys.maxint, 16, 0))
 
         # Even though we're calling warn_until, we pass _dont_call_warnings
@@ -91,8 +90,8 @@ class WarnUntilTestCase(TestCase):
                 RuntimeError,
                 r'The warning triggered on filename \'(.*)warnings_test.py\', '
                 r'line number ([\d]+), is supposed to be shown until version '
-                r'\'0.17.0\' is released. Current version is now '
-                r'\'([\d.]+)\'. Please remove the warning.'):
+                r'0.17.0 is released. Current version is now '
+                r'(.*). Please remove the warning.'):
             warn_until(
                 (0, 17), 'Foo', _dont_call_warnings=True
             )
@@ -101,8 +100,8 @@ class WarnUntilTestCase(TestCase):
                 RuntimeError,
                 r'The warning triggered on filename \'(.*)warnings_test.py\', '
                 r'line number ([\d]+), is supposed to be shown until version '
-                r'\'Hydrogen((.*))\' is released. Current version is now '
-                r'\'([\d.]+)\'. Please remove the warning.'):
+                r'(.*) is released. Current version is now '
+                r'(.*). Please remove the warning.'):
             warn_until(
                 'Hydrogen', 'Foo', _dont_call_warnings=True,
                 _version_info_=(sys.maxint, 16, 0)
@@ -155,7 +154,7 @@ class WarnUntilTestCase(TestCase):
                 RuntimeError,
                 r'The warning triggered on filename \'(.*)warnings_test.py\', '
                 r'line number ([\d]+), is supposed to be shown until version '
-                r'\'0.17.0\' is released. Current version is now \'0.17.0\'. '
+                r'0.17.0 is released. Current version is now 0.17.0. '
                 r'Please remove the warning.'):
             raise_warning(_version_info_=(0, 17))  # no kwargs
 
@@ -163,7 +162,7 @@ class WarnUntilTestCase(TestCase):
                 RuntimeError,
                 r'The warning triggered on filename \'(.*)warnings_test.py\', '
                 r'line number ([\d]+), is supposed to be shown until version '
-                r'\'0.17.0\' is released. Current version is now \'0.17.0\'. '
+                r'0.17.0 is released. Current version is now 0.17.0. '
                 r'Please remove the warning.'):
             raise_warning(bar='baz', qux='quux', _version_info_=(0, 17))  # some kwargs
 

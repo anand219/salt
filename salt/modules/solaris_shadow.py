@@ -2,6 +2,7 @@
 '''
 Manage the password database on Solaris systems
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import os
@@ -94,11 +95,20 @@ def info(name):
     try:
         data = pwd.getpwnam(name)
         ret.update({
-            'name': name,
-            'passwd': data.pw_dir
+            'name': name
         })
     except KeyError:
         return ret
+
+    # To compensate for lack of spwd module, read in password hash from /etc/shadow
+    s_file = '/etc/shadow'
+    if not os.path.isfile(s_file):
+        return ret
+    with salt.utils.fopen(s_file, 'rb') as ifile:
+        for line in ifile:
+            comps = line.strip().split(':')
+            if comps[0] == name:
+                ret.update({'passwd': comps[1]})
 
     # For SmartOS `passwd -s <username>` and the output format is:
     #   name status mm/dd/yy min max warn
@@ -115,7 +125,7 @@ def info(name):
     #  5. Maximum age
     #  6. Warning period
 
-    output = __salt__['cmd.run_all']('passwd -s {0}'.format(name))
+    output = __salt__['cmd.run_all']('passwd -s {0}'.format(name), python_shell=False)
     if output['retcode'] != 0:
         return ret
 
@@ -123,12 +133,11 @@ def info(name):
     if len(fields) == 2:
         # For example:
         #   root      NL
-        return
+        return ret
     # We have all fields:
     #   buildbot L 05/09/2013 0 99999 7
     ret.update({
         'name': data.pw_name,
-        'passwd': data.pw_dir,
         'lstchg': fields[2],
         'min': int(fields[3]),
         'max': int(fields[4]),
@@ -154,7 +163,7 @@ def set_maxdays(name, maxdays):
     if maxdays == pre_info['max']:
         return True
     cmd = 'passwd -x {0} {1}'.format(maxdays, name)
-    __salt__['cmd.run'](cmd)
+    __salt__['cmd.run'](cmd, python_shell=False)
     post_info = info(name)
     if post_info['max'] != pre_info['max']:
         return post_info['max'] == maxdays
@@ -174,7 +183,7 @@ def set_mindays(name, mindays):
     if mindays == pre_info['min']:
         return True
     cmd = 'passwd -n {0} {1}'.format(mindays, name)
-    __salt__['cmd.run'](cmd)
+    __salt__['cmd.run'](cmd, python_shell=False)
     post_info = info(name)
     if post_info['min'] != pre_info['min']:
         return post_info['min'] == mindays
@@ -228,7 +237,7 @@ def set_warndays(name, warndays):
     if warndays == pre_info['warn']:
         return True
     cmd = 'passwd -w {0} {1}'.format(warndays, name)
-    __salt__['cmd.run'](cmd)
+    __salt__['cmd.run'](cmd, python_shell=False)
     post_info = info(name)
     if post_info['warn'] != pre_info['warn']:
         return post_info['warn'] == warndays

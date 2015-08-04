@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 
+# Import Python libs
+from __future__ import absolute_import
+
 # Import Salt Testing libs
 from salttesting.helpers import ensure_in_syspath
 ensure_in_syspath('../../')
@@ -12,7 +15,7 @@ class AliasesTest(integration.ModuleCase):
     '''
     Validate aliases module
     '''
-    def not_test_set_target(self):
+    def test_set_target(self):
         '''
         aliases.set_target and aliases.get_target
         '''
@@ -24,9 +27,9 @@ class AliasesTest(integration.ModuleCase):
         tgt_ret = self.run_function(
                 'aliases.get_target',
                 alias='fred')
-        self.assertEqual(tgt_ret, 'target=bob')
+        self.assertEqual(tgt_ret, 'bob')
 
-    def not_test_has_target(self):
+    def test_has_target(self):
         '''
         aliases.set_target and aliases.has_target
         '''
@@ -41,7 +44,7 @@ class AliasesTest(integration.ModuleCase):
                 target='bob')
         self.assertTrue(tgt_ret)
 
-    def not_test_list_aliases(self):
+    def test_list_aliases(self):
         '''
         aliases.list_aliases
         '''
@@ -53,7 +56,7 @@ class AliasesTest(integration.ModuleCase):
         tgt_ret = self.run_function(
                 'aliases.list_aliases')
         self.assertIsInstance(tgt_ret, dict)
-        self.assertIn('alias=fred', tgt_ret)
+        self.assertIn('fred', tgt_ret)
 
     def test_rm_alias(self):
         '''
@@ -64,9 +67,9 @@ class AliasesTest(integration.ModuleCase):
                 alias='frank',
                 target='greg')
         self.assertTrue(set_ret)
-        set_ret = self.run_function(
-                'aliases.rm_alias',
-                alias='frank')
+        self.run_function(
+            'aliases.rm_alias',
+            alias='frank')
         tgt_ret = self.run_function(
                 'aliases.list_aliases')
         self.assertIsInstance(tgt_ret, dict)

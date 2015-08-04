@@ -154,18 +154,24 @@
 '''
 
 # Import python libs
+from __future__ import absolute_import
 import os
-import zmq
 import json
-import socket
 import logging
 import logging.handlers
 import datetime
 
 # Import salt libs
-from salt._compat import string_types
 from salt.log.setup import LOG_LEVELS
 from salt.log.mixins import NewStyleClassMixIn
+import salt.utils.network
+
+# Import Third party libs
+import salt.ext.six as six
+try:
+    import zmq
+except ImportError:
+    pass
 
 log = logging.getLogger(__name__)
 
@@ -179,7 +185,7 @@ def __virtual__():
         log.trace(
             'None of the required configuration sections, '
             '\'logstash_udp_handler\' and \'logstash_zmq_handler\', '
-            'were found the in the configuration. Not loading the Logstash '
+            'were found in the configuration. Not loading the Logstash '
             'logging handlers module.'
         )
         return False
@@ -267,7 +273,7 @@ class LogstashFormatter(logging.Formatter, NewStyleClassMixIn):
         return datetime.datetime.utcfromtimestamp(record.created).isoformat()[:-3] + 'Z'
 
     def format_v0(self, record):
-        host = socket.getfqdn()
+        host = salt.utils.network.get_fqhostname()
         message_dict = {
             '@timestamp': self.formatTime(record),
             '@fields': {
@@ -298,7 +304,7 @@ class LogstashFormatter(logging.Formatter, NewStyleClassMixIn):
             )
 
         # Add any extra attributes to the message field
-        for key, value in record.__dict__.items():
+        for key, value in six.iteritems(record.__dict__):
             if key in ('args', 'asctime', 'created', 'exc_info', 'exc_text',
                        'filename', 'funcName', 'id', 'levelname', 'levelno',
                        'lineno', 'module', 'msecs', 'msecs', 'message', 'msg',
@@ -311,7 +317,7 @@ class LogstashFormatter(logging.Formatter, NewStyleClassMixIn):
                 message_dict['@fields'][key] = value
                 continue
 
-            if isinstance(value, (string_types, bool, dict, float, int, list)):
+            if isinstance(value, (six.string_types, bool, dict, float, int, list)):
                 message_dict['@fields'][key] = value
                 continue
 
@@ -322,7 +328,7 @@ class LogstashFormatter(logging.Formatter, NewStyleClassMixIn):
         message_dict = {
             '@version': 1,
             '@timestamp': self.formatTime(record),
-            'host': socket.getfqdn(),
+            'host': salt.utils.network.get_fqhostname(),
             'levelname': record.levelname,
             'logger': record.name,
             'lineno': record.lineno,
@@ -342,7 +348,7 @@ class LogstashFormatter(logging.Formatter, NewStyleClassMixIn):
             )
 
         # Add any extra attributes to the message field
-        for key, value in record.__dict__.items():
+        for key, value in six.iteritems(record.__dict__):
             if key in ('args', 'asctime', 'created', 'exc_info', 'exc_text',
                        'filename', 'funcName', 'id', 'levelname', 'levelno',
                        'lineno', 'module', 'msecs', 'msecs', 'message', 'msg',
@@ -355,7 +361,7 @@ class LogstashFormatter(logging.Formatter, NewStyleClassMixIn):
                 message_dict[key] = value
                 continue
 
-            if isinstance(value, (string_types, bool, dict, float, int, list)):
+            if isinstance(value, (six.string_types, bool, dict, float, int, list)):
                 message_dict[key] = value
                 continue
 
@@ -413,4 +419,12 @@ class ZMQLogstashHander(logging.Handler, NewStyleClassMixIn):
     def close(self):
         if self._context is not None:
             # One second to send any queued messages
-            self._context.destroy(1 * 1000)
+            if hasattr(self._context, 'destroy'):
+                self._context.destroy(1 * 1000)
+            else:
+                if getattr(self, '_publisher', None) is not None:
+                    self._publisher.setsockopt(zmq.LINGER, 1 * 1000)
+                    self._publisher.close()
+
+                if self._context.closed is False:
+                    self._context.term()

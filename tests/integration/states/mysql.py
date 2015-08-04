@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
-
 '''
 Tests for the MySQL states
 '''
 
 # Import python libs
+from __future__ import absolute_import
 import logging
-
 
 # Import Salt Testing libs
 from salttesting import skipIf
@@ -18,14 +17,14 @@ ensure_in_syspath('../../')
 
 # Import salt libs
 import integration
-import salt.utils
+import salt.ext.six as six
 from salt.modules import mysql as mysqlmod
 
 log = logging.getLogger(__name__)
 
 NO_MYSQL = False
 try:
-    import MySQLdb
+    import MySQLdb  # pylint: disable=import-error,unused-import
 except ImportError:
     NO_MYSQL = True
 
@@ -113,7 +112,7 @@ class MysqlDatabaseStateTest(integration.ModuleCase,
                 query='SELECT 1',
                 **kwargs
             )
-            if not isinstance(ret, dict) or not 'results' in ret:
+            if not isinstance(ret, dict) or 'results' not in ret:
                 raise AssertionError(
                     ('Unexpected result while testing connection'
                     ' on db {0!r}: {1}').format(
@@ -227,7 +226,7 @@ class MysqlDatabaseStateTest(integration.ModuleCase,
                     repr(ret)
                 )
             )
-        for item, descr in ret.iteritems():
+        for item, descr in six.iteritems(ret):
             result[item] = {
                 '__run_num__': descr['__run_num__'],
                 'comment': descr['comment'],
@@ -310,7 +309,7 @@ class MysqlGrantsStateTest(integration.ModuleCase,
         else:
             self.skipTest('No MySQL Server running, or no root access on it.')
         # Create some users and a test db
-        for user, userdef in self.users.iteritems():
+        for user, userdef in six.iteritems(self.users):
             self._userCreation(uname=userdef['name'], password=userdef['pwd'])
         self.run_state(
             'mysql_database.present',
@@ -328,12 +327,12 @@ class MysqlGrantsStateTest(integration.ModuleCase,
             connection_user=self.user,
             connection_pass=self.password,
         )
-        create_query = ('CREATE TABLE %(tblname)s ('
+        create_query = ('CREATE TABLE {tblname} ('
             ' id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,'
-            ' data VARCHAR(100)) ENGINE=%(engine)s;') % dict(
+            ' data VARCHAR(100)) ENGINE={engine};'.format(
             tblname=mysqlmod.quote_identifier(self.table1),
             engine='MYISAM',
-        )
+        ))
         log.info('Adding table {0!r}'.format(self.table1,))
         self.run_function(
             'mysql.query',
@@ -342,12 +341,12 @@ class MysqlGrantsStateTest(integration.ModuleCase,
             connection_user=self.user,
             connection_pass=self.password
         )
-        create_query = ('CREATE TABLE %(tblname)s ('
+        create_query = ('CREATE TABLE {tblname} ('
             ' id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,'
-            ' data VARCHAR(100)) ENGINE=%(engine)s;') % dict(
+            ' data VARCHAR(100)) ENGINE={engine};'.format(
             tblname=mysqlmod.quote_identifier(self.table2),
             engine='MYISAM',
-        )
+        ))
         log.info('Adding table {0!r}'.format(self.table2,))
         self.run_function(
             'mysql.query',
@@ -362,7 +361,7 @@ class MysqlGrantsStateTest(integration.ModuleCase,
         '''
         Removes created users and db
         '''
-        for user, userdef in self.users.iteritems():
+        for user, userdef in six.iteritems(self.users):
             self._userRemoval(uname=userdef['name'], password=userdef['pwd'])
         self.run_state(
             'mysql_database.absent',

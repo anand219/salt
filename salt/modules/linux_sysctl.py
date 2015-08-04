@@ -2,6 +2,7 @@
 '''
 Module for viewing and modifying sysctl parameters
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import logging
@@ -9,10 +10,12 @@ import os
 import re
 
 # Import salt libs
+import salt.ext.six as six
 import salt.utils
-from salt._compat import string_types
+from salt.ext.six import string_types
 from salt.exceptions import CommandExecutionError
-from salt.modules.systemd import _sd_booted
+import salt.utils.systemd
+import string
 
 log = logging.getLogger(__name__)
 
@@ -29,9 +32,17 @@ def __virtual__():
     '''
     if __grains__['kernel'] != 'Linux':
         return False
-    global _sd_booted
-    _sd_booted = salt.utils.namespaced_function(_sd_booted, globals())
     return __virtualname__
+
+
+def _check_systemd_salt_config():
+    conf = '/etc/sysctl.d/99-salt.conf'
+    if not os.path.exists(conf):
+        sysctl_dir = os.path.split(conf)[0]
+        if not os.path.exists(sysctl_dir):
+            os.makedirs(sysctl_dir)
+        salt.utils.fopen(conf, 'w').close()
+    return conf
 
 
 def default_config():
@@ -47,28 +58,18 @@ def default_config():
 
         salt -G 'kernel:Linux' sysctl.default_config
     '''
-    if _sd_booted():
-        for line in __salt__['cmd.run_stdout'](
-            'systemctl --version'
-        ).splitlines():
-            if line.startswith('systemd '):
-                version = line.split()[-1]
-                try:
-                    if int(version) >= 207:
-                        return '/etc/sysctl.d/99-salt.conf'
-                except ValueError:
-                    log.error(
-                        'Unexpected non-numeric systemd version {0!r} '
-                        'detected'.format(version)
-                    )
-                break
-
+    if salt.utils.systemd.booted(__context__) \
+            and salt.utils.systemd.version(__context__) >= 207:
+        return _check_systemd_salt_config()
     return '/etc/sysctl.conf'
 
 
-def show():
+def show(config_file=False):
     '''
     Return a list of sysctl parameters for this minion
+
+    config: Pull the data from the system configuration file
+        instead of the live data.
 
     CLI Example:
 
@@ -76,13 +77,30 @@ def show():
 
         salt '*' sysctl.show
     '''
-    cmd = 'sysctl -a'
     ret = {}
-    for line in __salt__['cmd.run_stdout'](cmd).splitlines():
-        if not line or ' = ' not in line:
-            continue
-        comps = line.split(' = ', 1)
-        ret[comps[0]] = comps[1]
+    if config_file:
+        try:
+            for line in salt.utils.fopen(config_file):
+                if not line.startswith('#') and '=' in line:
+                    # search if we have some '=' instead of ' = ' separators
+                    SPLIT = ' = '
+                    if SPLIT not in line:
+                        SPLIT = SPLIT.strip()
+                    key, value = line.split(SPLIT, 1)
+                    key = key.strip()
+                    value = value.lstrip()
+                    ret[key] = value
+        except (OSError, IOError):
+            log.error('Could not open sysctl file')
+            return None
+    else:
+        cmd = 'sysctl -a'
+        out = __salt__['cmd.run_stdout'](cmd, output_loglevel='trace')
+        for line in out.splitlines():
+            if not line or ' = ' not in line:
+                continue
+            comps = line.split(' = ', 1)
+            ret[comps[0]] = comps[1]
     return ret
 
 
@@ -97,7 +115,7 @@ def get(name):
         salt '*' sysctl.get net.ipv4.ip_forward
     '''
     cmd = 'sysctl -n {0}'.format(name)
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=False)
     return out
 
 
@@ -112,23 +130,25 @@ def assign(name, value):
         salt '*' sysctl.assign net.ipv4.ip_forward 1
     '''
     value = str(value)
-    sysctl_file = '/proc/sys/{0}'.format(name.replace('.', '/'))
+    trantab = ''.maketrans('./', '/.') if six.PY3 else string.maketrans('./', '/.')
+    sysctl_file = '/proc/sys/{0}'.format(name.translate(trantab))
     if not os.path.exists(sysctl_file):
         raise CommandExecutionError('sysctl {0} does not exist'.format(name))
 
     ret = {}
     cmd = 'sysctl -w {0}="{1}"'.format(name, value)
-    data = __salt__['cmd.run_all'](cmd)
+    data = __salt__['cmd.run_all'](cmd, python_shell=False)
     out = data['stdout']
+    err = data['stderr']
 
     # Example:
     #    # sysctl -w net.ipv4.tcp_rmem="4096 87380 16777216"
     #    net.ipv4.tcp_rmem = 4096 87380 16777216
     regex = re.compile(r'^{0}\s+=\s+{1}$'.format(re.escape(name), re.escape(value)))
 
-    if not regex.match(out):
-        if data['retcode'] != 0 and data['stderr']:
-            error = data['stderr']
+    if not regex.match(out) or 'Invalid argument' in str(err):
+        if data['retcode'] != 0 and err:
+            error = err
         else:
             error = out
         raise CommandExecutionError('sysctl -w failed: {0}'.format(error))

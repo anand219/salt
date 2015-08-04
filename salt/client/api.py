@@ -14,6 +14,7 @@ client applications.
     http://docs.saltstack.com/ref/clients/index.html
 
 '''
+from __future__ import absolute_import
 # Import Python libs
 import os
 
@@ -45,7 +46,7 @@ class APIClient(object):
     Provide a uniform method of accessing the various client interfaces in Salt
     in the form of low-data data structures. For example:
     '''
-    def __init__(self, opts=None):
+    def __init__(self, opts=None, listen=True):
         if not opts:
             opts = salt.config.client_config(
                 os.environ.get(
@@ -54,11 +55,16 @@ class APIClient(object):
                 )
             )
         self.opts = opts
-        self.localClient = salt.client.LocalClient(self.opts['conf_file'])
+        self.localClient = salt.client.get_local_client(self.opts['conf_file'])
         self.runnerClient = salt.runner.RunnerClient(self.opts)
         self.wheelClient = salt.wheel.Wheel(self.opts)
         self.resolver = salt.auth.Resolver(self.opts)
-        self.event = salt.utils.event.SaltEvent('master', self.opts['sock_dir'])
+        self.event = salt.utils.event.get_event(
+                'master',
+                self.opts['sock_dir'],
+                self.opts['transport'],
+                opts=self.opts,
+                listen=listen)
 
     def run(self, cmd):
         '''
@@ -220,7 +226,7 @@ class APIClient(object):
             client = parts[0]
             module = '.'.join(parts[1:])  # strip prefix
             if client == 'wheel':
-                functions = self.wheelClient.w_funcs
+                functions = self.wheelClient.functions
             elif client == 'runner':
                 functions = self.runnerClient.functions
             result = {'master': salt.utils.argspec_report(functions, module)}
@@ -246,7 +252,7 @@ class APIClient(object):
         {
             'token': 'tokenstring',
             'start': starttimeinfractionalseconds,
-            'expire': expiretimeinfactionalseconds,
+            'expire': expiretimeinfractionalseconds,
             'name': 'usernamestring',
             'user': 'usernamestring',
             'username': 'usernamestring',
@@ -270,7 +276,7 @@ class APIClient(object):
             raise EauthAuthenticationError(
                 "Authentication failed with {0}.".format(repr(ex)))
 
-        if not 'token' in tokenage:
+        if 'token' not in tokenage:
             raise EauthAuthenticationError("Authentication failed with provided credentials.")
 
         # Grab eauth config for the current backend for the current user

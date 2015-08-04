@@ -7,7 +7,7 @@ SoftLayer is a public cloud provider, and baremetal hardware hosting provider.
 Dependencies
 ============
 The SoftLayer driver for Salt Cloud requires the softlayer package, which is
-available at PyPi:
+available at PyPI:
 
 https://pypi.python.org/pypi/SoftLayer
 
@@ -36,7 +36,7 @@ Set up the cloud config at ``/etc/salt/cloud.providers``:
       user: MYUSER1138
       apikey: 'e3b68aa711e6deadc62d5b76355674beef7cc3116062ddbacafe5f7e465bfdc9'
 
-      provider: softlayer
+      driver: softlayer
 
 
     my-softlayer-hw:
@@ -48,7 +48,7 @@ Set up the cloud config at ``/etc/salt/cloud.providers``:
       user: MYUSER1138
       apikey: 'e3b68aa711e6deadc62d5b76355674beef7cc3116062ddbacafe5f7e465bfdc9'
 
-      provider: softlayer-hw
+      driver: softlayer_hw
 
 
 Access Credentials
@@ -210,7 +210,7 @@ The profile can be realized now with a salt command:
 
 Using the above configuration, this will create `myserver.example.com`.
 
-Once the instance has been created with salt-minion installed, connectivity to 
+Once the instance has been created with salt-minion installed, connectivity to
 it can be verified with Salt:
 
 .. code-block:: bash
@@ -341,9 +341,9 @@ driver.
 
 show_instance
 ~~~~~~~~~~~~~
-This action is a thin wrapper around `--full-query`, which displays details on a 
-single instance only. In an environment with several machines, this will save a 
-user from having to sort through all instance data, just to examine a single 
+This action is a thin wrapper around `--full-query`, which displays details on a
+single instance only. In an environment with several machines, this will save a
+user from having to sort through all instance data, just to examine a single
 instance.
 
 .. code-block:: bash
@@ -384,7 +384,7 @@ The `globalIdentifier` returned in this list is necessary for the
 
 Optional Products for SoftLayer HW
 ==================================
-The softlayer-hw provider supports the ability to add optional products, which
+The softlayer_hw provider supports the ability to add optional products, which
 are supported by SoftLayer's API. These products each have an ID associated with
 them, that can be passed into Salt Cloud with the `optional_products` option:
 
@@ -413,16 +413,16 @@ here:
 
 Public Secondary IP Addresses
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-* 22: 4 Public IP Addresses    
-* 23: 8 Public IP Addresses     
+* 22: 4 Public IP Addresses
+* 23: 8 Public IP Addresses
 
 Primary IPv6 Addresses
 ~~~~~~~~~~~~~~~~~~~~~~
-* 17129: 1 IPv6 Address    
+* 17129: 1 IPv6 Address
 
 Public Static IPv6 Addresses
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-* 1481: /64 Block Static Public IPv6 Addresses    
+* 1481: /64 Block Static Public IPv6 Addresses
 
 OS-Specific Addon
 ~~~~~~~~~~~~~~~~~
@@ -506,4 +506,3 @@ Hardware & Software Firewalls
 * 410: 10Mbps Hardware Firewall
 * 409: 100Mbps Hardware Firewall
 * 408: 1000Mbps Hardware Firewall
-

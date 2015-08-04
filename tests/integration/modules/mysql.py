@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 
 # Import python libs
+from __future__ import absolute_import
 import logging
-
-from mock import patch
 
 # Import Salt Testing libs
 from salttesting import skipIf
@@ -15,14 +14,17 @@ ensure_in_syspath('../../')
 
 # Import salt libs
 import integration
-import salt.utils
 from salt.modules import mysql as mysqlmod
+
+# Import 3rd-party libs
+import salt.ext.six as six
+from salt.ext.six.moves import range  # pylint: disable=import-error,redefined-builtin
 
 log = logging.getLogger(__name__)
 
 NO_MYSQL = False
 try:
-    import MySQLdb
+    import MySQLdb  # pylint: disable=import-error,unused-import
 except Exception:
     NO_MYSQL = True
 
@@ -33,7 +35,7 @@ except Exception:
     'MySQL integration tests.'
 )
 class MysqlModuleDbTest(integration.ModuleCase,
-                      integration.SaltReturnAssertsMixIn):
+                        integration.SaltReturnAssertsMixIn):
     '''
     Module testing database creation on a real MySQL Server.
     '''
@@ -133,7 +135,7 @@ class MysqlModuleDbTest(integration.ModuleCase,
                 query='SELECT 1',
                 **kwargs
             )
-            if not isinstance(ret, dict) or not 'results' in ret:
+            if not isinstance(ret, dict) or 'results' not in ret:
                 raise AssertionError(
                     ('Unexpected result while testing connection'
                     ' on database : {0}').format(
@@ -394,22 +396,22 @@ class MysqlModuleDbTest(integration.ModuleCase,
                       'B%table \'`2': 'InnoDB',
                       'Ctable --`3': 'MEMORY'
                      }
-        for tablename, engine in iter(sorted(tablenames.iteritems())):
+        for tablename, engine in sorted(six.iteritems(tablenames)):
             # prepare queries
-            create_query = ('CREATE TABLE %(tblname)s ('
+            create_query = ('CREATE TABLE {tblname} ('
                 ' id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,'
-                ' data VARCHAR(100)) ENGINE=%(engine)s;') % dict(
+                ' data VARCHAR(100)) ENGINE={engine};'.format(
                     tblname=mysqlmod.quote_identifier(tablename),
                     engine=engine,
-                )
-            insert_query = ('INSERT INTO %(tblname)s (data)'
-                ' VALUES ') % dict(
+                ))
+            insert_query = ('INSERT INTO {tblname} (data)'
+                ' VALUES '.format(
                     tblname=mysqlmod.quote_identifier(tablename)
-            )
-            delete_query = ('DELETE from  %(tblname)s'
-                ' order by rand() limit 50;') % dict(
+            ))
+            delete_query = ('DELETE from  {tblname}'
+                ' order by rand() limit 50;'.format(
                     tblname=mysqlmod.quote_identifier(tablename)
-            )
+            ))
             for x in range(100):
                 insert_query += "('foo"+str(x)+"'),"
             insert_query += "('bar');"
@@ -516,7 +518,7 @@ class MysqlModuleDbTest(integration.ModuleCase,
           connection_pass=self.password
         )
         expected = []
-        for tablename, engine in iter(sorted(tablenames.iteritems())):
+        for tablename, engine in sorted(six.iteritems(tablenames)):
             if engine is 'MEMORY':
                 expected.append([{
                     'Table': dbname+'.'+tablename,
@@ -541,7 +543,7 @@ class MysqlModuleDbTest(integration.ModuleCase,
           connection_pass=self.password
         )
         expected = []
-        for tablename, engine in iter(sorted(tablenames.iteritems())):
+        for tablename, engine in sorted(six.iteritems(tablenames)):
             if engine is 'MYISAM':
                 expected.append([{
                     'Table': dbname+'.'+tablename,
@@ -567,7 +569,7 @@ class MysqlModuleDbTest(integration.ModuleCase,
         )
 
         expected = []
-        for tablename, engine in iter(sorted(tablenames.iteritems())):
+        for tablename, engine in sorted(six.iteritems(tablenames)):
             if engine is 'MYISAM':
                 expected.append([{
                     'Table': dbname+'.'+tablename,
@@ -699,7 +701,7 @@ class MysqlModuleUserTest(integration.ModuleCase,
             repr(ret)
         ))
         # Alter password
-        if not new_password is None or new_password_hash is not None:
+        if new_password is not None or new_password_hash is not None:
             ret = self.run_function(
                 'mysql.user_chpass',
                 user=uname,
@@ -1098,7 +1100,7 @@ class MysqlModuleUserTest(integration.ModuleCase,
             connection_pass='pwd`\'"1b',
             connection_host='localhost'
         )
-        if not isinstance(ret, dict) or not 'results' in ret:
+        if not isinstance(ret, dict) or 'results' not in ret:
             raise AssertionError(
                 ('Unexpected result while testing connection'
                 ' with user {0!r}: {1}').format(
@@ -1124,7 +1126,7 @@ class MysqlModuleUserTest(integration.ModuleCase,
         #    connection_charset='utf8',
         #    saltenv={"LC_ALL": "en_US.utf8"}
         #)
-        #if not isinstance(ret, dict) or not 'results' in ret:
+        #if not isinstance(ret, dict) or 'results' not in ret:
         #    raise AssertionError(
         #        ('Unexpected result while testing connection'
         #        ' with user {0!r}: {1}').format(
@@ -1141,7 +1143,7 @@ class MysqlModuleUserTest(integration.ModuleCase,
             connection_pass='',
             connection_host='localhost',
         )
-        if not isinstance(ret, dict) or not 'results' in ret:
+        if not isinstance(ret, dict) or 'results' not in ret:
             raise AssertionError(
                 ('Unexpected result while testing connection'
                 ' with user {0!r}: {1}').format(
@@ -1161,7 +1163,7 @@ class MysqlModuleUserTest(integration.ModuleCase,
         #    connection_charset='utf8',
         #    saltenv={"LC_ALL": "en_US.utf8"}
         #)
-        #if not isinstance(ret, dict) or not 'results' in ret:
+        #if not isinstance(ret, dict) or 'results' not in ret:
         #    raise AssertionError(
         #        ('Unexpected result while testing connection'
         #        ' with user {0!r}: {1}').format(
@@ -1180,7 +1182,7 @@ class MysqlModuleUserTest(integration.ModuleCase,
             connection_charset='utf8',
             saltenv={"LC_ALL": "en_US.utf8"}
         )
-        if not isinstance(ret, dict) or not 'results' in ret:
+        if not isinstance(ret, dict) or 'results' not in ret:
             raise AssertionError(
                 ('Unexpected result while testing connection'
                 ' with user {0!r}: {1}').format(
@@ -1337,7 +1339,7 @@ class MysqlModuleUserGrantTest(integration.ModuleCase,
         else:
             self.skipTest('No MySQL Server running, or no root access on it.')
         # Create some users and a test db
-        for user, userdef in self.users.iteritems():
+        for user, userdef in six.iteritems(self.users):
             self._userCreation(uname=userdef['name'], password=userdef['pwd'])
         self.run_function(
             'mysql.db_create',
@@ -1351,12 +1353,12 @@ class MysqlModuleUserGrantTest(integration.ModuleCase,
             connection_user=self.user,
             connection_pass=self.password,
         )
-        create_query = ('CREATE TABLE %(tblname)s ('
+        create_query = ('CREATE TABLE {tblname} ('
             ' id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,'
-            ' data VARCHAR(100)) ENGINE=%(engine)s;') % dict(
+            ' data VARCHAR(100)) ENGINE={engine};'.format(
             tblname=mysqlmod.quote_identifier(self.table1),
             engine='MYISAM',
-        )
+        ))
         log.info('Adding table {0!r}'.format(self.table1,))
         self.run_function(
             'mysql.query',
@@ -1365,12 +1367,12 @@ class MysqlModuleUserGrantTest(integration.ModuleCase,
             connection_user=self.user,
             connection_pass=self.password
         )
-        create_query = ('CREATE TABLE %(tblname)s ('
+        create_query = ('CREATE TABLE {tblname} ('
             ' id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,'
-            ' data VARCHAR(100)) ENGINE=%(engine)s;') % dict(
+            ' data VARCHAR(100)) ENGINE={engine};'.format(
             tblname=mysqlmod.quote_identifier(self.table2),
             engine='MYISAM',
-        )
+        ))
         log.info('Adding table {0!r}'.format(self.table2,))
         self.run_function(
             'mysql.query',
@@ -1385,7 +1387,7 @@ class MysqlModuleUserGrantTest(integration.ModuleCase,
         '''
         Removes created users and db
         '''
-        for user, userdef in self.users.iteritems():
+        for user, userdef in six.iteritems(self.users):
             self._userRemoval(uname=userdef['name'], password=userdef['pwd'])
         self.run_function(
             'mysql.db_remove',

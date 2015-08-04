@@ -2,11 +2,11 @@
 '''
 Subversion SCM
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import re
 import shlex
-import subprocess
 
 # Import salt libs
 from salt import utils, exceptions
@@ -19,7 +19,7 @@ def __virtual__():
     Only load if svn is installed
     '''
     if utils.which('svn'):
-        return 'svn'
+        return True
     return False
 
 
@@ -58,21 +58,22 @@ def _run_svn(cmd, cwd, user, username, password, opts, **kwargs):
     kwargs
         Additional options to pass to the run-cmd
     '''
-    cmd = 'svn --non-interactive {0} '.format(cmd)
-    if username:
-        opts += ('--username', username)
-    if password:
-        opts += ('--password', password)
-    if opts:
-        cmd += subprocess.list2cmdline(opts)
+    cmd = ['svn', '--non-interactive', cmd]
 
-    result = __salt__['cmd.run_all'](cmd, cwd=cwd, runas=user, **kwargs)
+    options = list(opts)
+    if username:
+        options.extend(['--username', username])
+    if password:
+        options.extend(['--password', password])
+    cmd.extend(options)
+
+    result = __salt__['cmd.run_all'](cmd, python_shell=False, cwd=cwd, runas=user, **kwargs)
 
     retcode = result['retcode']
 
     if retcode == 0:
         return result['stdout']
-    raise exceptions.CommandExecutionError(result['stderr'] + '\n\n' + cmd)
+    raise exceptions.CommandExecutionError(result['stderr'] + '\n\n' + ' '.join(cmd))
 
 
 def info(cwd,
@@ -179,7 +180,7 @@ def checkout(cwd,
 def switch(cwd, remote, target=None, user=None, username=None,
            password=None, *opts):
     '''
-    .. versionadded:: 2014.1.0 (Hydrogen)
+    .. versionadded:: 2014.1.0
 
     Switch a working copy of a remote Subversion repository
     directory
@@ -203,7 +204,9 @@ def switch(cwd, remote, target=None, user=None, username=None,
     password : None
         Connect to the Subversion server with this password
 
-    CLI Example::
+    CLI Example:
+
+    .. code-block:: bash
 
         salt '*' svn.switch /path/to/repo svn://remote/repo
     '''
@@ -441,6 +444,7 @@ def export(cwd,
              user=None,
              username=None,
              password=None,
+             revision='HEAD',
              *opts):
     '''
     Create an unversioned copy of a tree.
@@ -475,4 +479,6 @@ def export(cwd,
     opts += (remote,)
     if target:
         opts += (target,)
+    revision_args = '-r'
+    opts += (revision_args, str(revision),)
     return _run_svn('export', cwd, user, username, password, opts)

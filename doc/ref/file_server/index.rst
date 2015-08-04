@@ -1,3 +1,5 @@
+.. _file-server:
+
 ================
 Salt File Server
 ================
@@ -10,12 +12,32 @@ The main intent of the Salt file server is to present files for use in the
 Salt state system. With this said, the Salt file server can be used for any
 general file transfer from the master to the minions.
 
+.. toctree::
+    :glob:
+
+    *
+
 The cp Module
 -------------
 
 The cp module is the home of minion side file server operations. The cp module
-is used by the Salt state system, salt-cp and can be used to distribute files
+is used by the Salt state system, salt-cp, and can be used to distribute files
 presented by the Salt file server.
+
+Escaping Special Characters
+```````````````````````````
+
+The ``salt://`` url format can potentially contain a query string, for example
+``salt://dir/file.txt?saltenv=base``. You can prevent the fileclient/fileserver from
+interpreting ``?`` as the initial token of a query string by referencing the file
+with ``salt://|`` rather than ``salt://``.
+
+.. code-block:: yaml
+
+    /etc/marathon/conf/?checkpoint:
+      file.managed:
+        - source: salt://|hw/config/?checkpoint
+        - makedirs: True
 
 Environments
 ````````````
@@ -53,16 +75,17 @@ Because gzip is CPU-intensive, this should only be used in
 scenarios where the compression ratio is very high (e.g. pretty-printed JSON
 or YAML files).
 
-Use the *gzip* named argument to enable it.  Valid values are 1..9,
-where 1 is the lightest compression and 9 the heaviest.  1 uses the least CPU
-on the master (and minion), 9 uses the most.
+To use compression, use the ``gzip`` named argument. Valid values are integers
+from 1 to 9, where 1 is the lightest compression and 9 the heaviest. In other
+words, 1 uses the least CPU on the master (and minion), while 9 uses the most.
 
 .. code-block:: bash
 
     # salt '*' cp.get_file salt://vimrc /etc/vimrc gzip=5
 
 Finally, note that by default cp.get_file does *not* create new destination
-directories if they do not exist.  To change this, use the *makedirs* argument:
+directories if they do not exist.  To change this, use the ``makedirs``
+argument:
 
 .. code-block:: bash
 
@@ -80,8 +103,8 @@ directory from the master.  The syntax is very similar to get_file:
 
     # salt '*' cp.get_dir salt://etc/apache2 /etc
 
-cp.get_dir supports *template* rendering and *gzip* compression arguments just
-like get_file:
+cp.get_dir supports template rendering and gzip compression arguments just like
+get_file:
 
 .. code-block:: bash
 
@@ -139,4 +162,3 @@ data is not available, it needs to be generated:
         client = salt.minion.FileClient(opts)
         # Call get_file
         return client.get_file(path, dest, False, env)
-

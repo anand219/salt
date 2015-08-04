@@ -3,10 +3,12 @@
     :codeauthor: :email: `Mike Place <mp@saltstack.com>`
 '''
 
+# Import Python libs
+from __future__ import absolute_import
+
 # Import Salt Testing libs
-from salttesting import TestCase, skipIf
+from salttesting import TestCase
 from salttesting.helpers import ensure_in_syspath
-from salttesting.mock import NO_MOCK, NO_MOCK_REASON, MagicMock, patch
 
 ensure_in_syspath('../')
 
@@ -27,7 +29,6 @@ class TemplateTestCase(TestCase):
         ret = template.compile_template(['1', '2', '3'], None, None)
         self.assertDictEqual(ret, {})
 
-    @skipIf(NO_MOCK, NO_MOCK_REASON)
     def test_check_render_pipe_str(self):
         '''
         Check that all renderers specified in the pipe string are available.

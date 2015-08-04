@@ -4,6 +4,7 @@ Setup of Python virtualenv sandboxes
 ====================================
 
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import logging
@@ -26,7 +27,6 @@ def __virtual__():
 def managed(name,
             venv_bin=None,
             requirements=None,
-            no_site_packages=None,
             system_site_packages=False,
             distribute=False,
             use_wheel=False,
@@ -36,13 +36,19 @@ def managed(name,
             never_download=None,
             prompt=None,
             user=None,
-            runas=None,
             no_chown=False,
             cwd=None,
             index_url=None,
             extra_index_url=None,
             pre_releases=False,
-            no_deps=False):
+            no_deps=False,
+            pip_download=None,
+            pip_download_cache=None,
+            pip_exists_action=None,
+            pip_ignore_installed=False,
+            proxy=None,
+            use_vt=False,
+            env_vars=None):
     '''
     Create a virtualenv and optionally manage it with pip
 
@@ -53,10 +59,27 @@ def managed(name,
         the file will be transferred from the master file server.
     cwd
         Path to the working directory where "pip install" is executed.
+    user
+        The user under which to run virtualenv and pip
+    no_chown: False
+        When user is given, do not attempt to copy and chown
+        a requirements file (needed if the requirements file refers to other
+        files via relative paths, as the copy-and-chown procedure does not
+        account for such files)
     use_wheel : False
         Prefer wheel archives (requires pip>=1.4)
     no_deps: False
         Pass `--no-deps` to `pip`.
+    pip_exists_action: None
+        Default action of pip when a path already exists: (s)witch, (i)gnore,
+        (w)ipe, (b)ackup
+    proxy: None
+        Proxy address which is passed to "pip install"
+    env_vars
+        Set environment variables that some builds will depend on. For example,
+        a Python C-module may have a Makefile that needs INCLUDE_PATH set to
+        pick up a header file while compiling.
+
 
     Also accepts any kwargs that the virtualenv module will.
 
@@ -69,36 +92,10 @@ def managed(name,
     '''
     ret = {'name': name, 'result': True, 'comment': '', 'changes': {}}
 
-    if not 'virtualenv.create' in __salt__:
+    if 'virtualenv.create' not in __salt__:
         ret['result'] = False
         ret['comment'] = 'Virtualenv was not detected on this system'
         return ret
-
-    salt.utils.warn_until(
-        'Hydrogen',
-        'Let\'s support \'runas\' until salt {0} is out, after which it will'
-        'stop being supported'.format(
-            salt.version.SaltStackVersion.from_name('Helium').formatted_version
-        ),
-        _dont_call_warnings=True
-    )
-    if runas:
-        # Warn users about the deprecation
-        ret.setdefault('warnings', []).append(
-            'The \'runas\' argument is being deprecated in favor of \'user\', '
-            'please update your state files.'
-        )
-    if user is not None and runas is not None:
-        # user wins over runas but let warn about the deprecation.
-        ret.setdefault('warnings', []).append(
-            'Passed both the \'runas\' and \'user\' arguments. Please don\'t. '
-            '\'runas\' is being ignored in favor of \'user\'.'
-        )
-        runas = None
-    elif runas is not None:
-        # Support old runas usage
-        user = runas
-        runas = None
 
     if salt.utils.is_windows():
         venv_py = os.path.join(name, 'Scripts', 'python.exe')
@@ -155,7 +152,6 @@ def managed(name,
         _ret = __salt__['virtualenv.create'](
             name,
             venv_bin=venv_bin,
-            no_site_packages=no_site_packages,
             system_site_packages=system_site_packages,
             distribute=distribute,
             clear=clear,
@@ -163,7 +159,8 @@ def managed(name,
             extra_search_dir=extra_search_dir,
             never_download=never_download,
             prompt=prompt,
-            user=user
+            user=user,
+            use_vt=use_vt,
         )
 
         ret['result'] = _ret['retcode'] == 0
@@ -191,7 +188,7 @@ def managed(name,
 
     # Populate the venv via a requirements file
     if requirements:
-        before = set(__salt__['pip.freeze'](bin_env=name))
+        before = set(__salt__['pip.freeze'](bin_env=name, user=user, use_vt=use_vt))
         _ret = __salt__['pip.install'](
             requirements=requirements,
             bin_env=name,
@@ -200,9 +197,16 @@ def managed(name,
             cwd=cwd,
             index_url=index_url,
             extra_index_url=extra_index_url,
+            download=pip_download,
+            download_cache=pip_download_cache,
             no_chown=no_chown,
             pre_releases=pre_releases,
+            exists_action=pip_exists_action,
+            ignore_installed=pip_ignore_installed,
             no_deps=no_deps,
+            proxy=proxy,
+            use_vt=use_vt,
+            env_vars=env_vars
         )
         ret['result'] &= _ret['retcode'] == 0
         if _ret['retcode'] > 0:

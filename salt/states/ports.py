@@ -2,7 +2,7 @@
 '''
 Manage software from FreeBSD ports
 
-.. versionadded:: 2014.1.0 (Hydrogen)
+.. versionadded:: 2014.1.0
 
 .. note::
 
@@ -14,6 +14,7 @@ Manage software from FreeBSD ports
 
         salt -t 1200 '*' state.highstate
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import copy
@@ -27,6 +28,7 @@ from salt.modules.freebsdports import _normalize, _options_file_exists
 
 # Needed by imported function _options_file_exists
 import os  # pylint: disable=W0611
+import salt.ext.six as six
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ def _repack_options(options):
     return dict(
         [
             (str(x), _normalize(y))
-            for x, y in salt.utils.repack_dictlist(options).iteritems()
+            for x, y in six.iteritems(salt.utils.repack_dictlist(options))
         ]
     )
 
@@ -54,7 +56,7 @@ def _get_option_list(options):
     Returns the key/value pairs in the passed dict in a commaspace-delimited
     list in the format "key=value".
     '''
-    return ', '.join(['{0}={1}'.format(x, y) for x, y in options.iteritems()])
+    return ', '.join(['{0}={1}'.format(x, y) for x, y in six.iteritems(options)])
 
 
 def _build_option_string(options):
@@ -115,10 +117,12 @@ def installed(name, options=None):
     options = _repack_options(options) if options is not None else {}
     desired_options = copy.deepcopy(default_options)
     desired_options.update(options)
-    shortname = name.rsplit('/')[-1]
+    ports_pre = [
+        x['origin'] for x in
+        six.itervalues(__salt__['pkg.list_pkgs'](with_origin=True))
+    ]
 
-    if current_options == desired_options \
-            and __salt__['pkg.version'](shortname):
+    if current_options == desired_options and name in ports_pre:
         # Port is installed as desired
         if options:
             ret['comment'] += ' ' + _build_option_string(options)
@@ -162,11 +166,14 @@ def installed(name, options=None):
                 return ret
 
     ret['changes'] = __salt__['ports.install'](name)
-    installed_version = __salt__['pkg.version'](shortname)
+    ports_post = [
+        x['origin'] for x in
+        six.itervalues(__salt__['pkg.list_pkgs'](with_origin=True))
+    ]
     err = sys.modules[
         __salt__['test.ping'].__module__
     ].__context__.pop('ports.install_error', None)
-    if err or not installed_version:
+    if err or name not in ports_post:
         ret['result'] = False
     if ret['result']:
         ret['comment'] = 'Successfully installed {0}'.format(name)

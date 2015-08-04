@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import absolute_import
 import inspect
 import json
 import os
@@ -6,6 +7,8 @@ import yaml
 
 import salt.fileclient
 import salt.utils
+import salt.utils.url
+import salt.ext.six as six
 
 __virtualname__ = 'defaults'
 
@@ -14,7 +17,7 @@ def _mk_client():
     '''
     Create a file client and add it to the context
     '''
-    if not 'cp.fileclient' in __context__:
+    if 'cp.fileclient' not in __context__:
         __context__['cp.fileclient'] = \
             salt.fileclient.get_file_client(__opts__)
 
@@ -25,17 +28,17 @@ def _get_files(pillar_name):
     and fetches them from the Salt master.
     '''
     _mk_client()
-    pillar_name = pillar_name.replace(".", "/")
+    pillar_name = pillar_name.replace('.', '/')
     paths = []
 
     for ext in ('yaml', 'json'):
-        source_url = 'salt://%s/%s' % (pillar_name, 'defaults.' + ext)
+        source_url = salt.utils.url.create(pillar_name + '/defaults.' + ext)
         paths.append(source_url)
 
     return __context__['cp.fileclient'].cache_files(paths)
 
 
-def _load(pillar_name, defaults_path):
+def _load(defaults_path):
     '''
     Given a pillar_name and the template cache location, attempt to load
     the defaults.json from the cache location. If it does not exist, try
@@ -44,7 +47,8 @@ def _load(pillar_name, defaults_path):
     for loader in json, yaml:
         defaults_file = os.path.join(defaults_path, 'defaults.' + loader.__name__)
         if os.path.exists(defaults_file):
-            defaults = loader.load(open(defaults_file))
+            with salt.utils.fopen(defaults_file) as fhr:
+                defaults = loader.load(fhr)
             return defaults
 
 
@@ -92,7 +96,8 @@ def get(key, default=''):
         frame_args = inspect.getargvalues(frame[0]).locals
 
         for _sls in (
-            frame_args.get('context', {}).get('__sls__'),
+            None if not isinstance(frame_args.get('context'), dict) else frame_args.get('context').get('__sls__'),
+            frame_args.get('mods', [None])[0],
             frame_args.get('sls')
         ):
             if sls is not None:
@@ -115,11 +120,17 @@ def get(key, default=''):
 
     _get_files(pillar_name)
 
-    defaults = _load(pillar_name, defaults_path)
-    data = salt.utils.dictupdate.update(defaults, __salt__['pillar.get'](pillar_name, {}))
-    value = salt.utils.traverse_dict(data, key, default)
+    defaults = _load(defaults_path)
 
-    if isinstance(value, unicode):
+    value = __salt__['pillar.get']('{0}:{1}'.format(pillar_name, key), None)
+
+    if value is None:
+        value = salt.utils.traverse_dict_and_list(defaults, key, None)
+
+    if value is None:
+        value = default
+
+    if isinstance(value, six.text_type):
         value = str(value)
 
     return value

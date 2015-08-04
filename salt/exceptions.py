@@ -2,18 +2,27 @@
 '''
 This module is a central location for all salt exceptions
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import copy
-
-# Import salt libs
-import salt.utils
+import salt.defaults.exitcodes
 
 
 class SaltException(Exception):
     '''
     Base exception class; all Salt-specific exceptions should subclass this
     '''
+    def __init__(self, message=''):
+        super(SaltException, self).__init__(message)
+        self.strerror = message
+
+    def pack(self):
+        '''
+        Pack this exception into a serializable dictionary that is safe for
+        transport via msgpack
+        '''
+        return dict(message=self.__unicode__(), args=self.args)
 
 
 class SaltClientError(SaltException):
@@ -25,6 +34,18 @@ class SaltClientError(SaltException):
 class SaltMasterError(SaltException):
     '''
     Problem reading the master root key
+    '''
+
+
+class SaltNoMinionsFound(SaltException):
+    '''
+    An attempt to retrieve a list of minions failed
+    '''
+
+
+class SaltSyndicMasterError(SaltException):
+    '''
+    Problem while proxying a request in the syndication master
     '''
 
 
@@ -59,9 +80,21 @@ class LoaderError(SaltException):
     '''
 
 
+class PublishError(SaltException):
+    '''
+    Problems encountered when trying to publish a command
+    '''
+
+
 class MinionError(SaltException):
     '''
     Minion problems reading uris such as salt:// or http://
+    '''
+
+
+class FileserverConfigError(SaltException):
+    '''
+    Used when invalid fileserver settings are detected
     '''
 
 
@@ -86,26 +119,42 @@ class SaltRenderError(SaltException):
     of the error.
     '''
     def __init__(self,
-                 error,
+                 message,
                  line_num=None,
                  buf='',
-                 marker='    <======================'):
-        self.error = error
-        exc_str = copy.deepcopy(error)
+                 marker='    <======================',
+                 trace=None):
+        self.error = message
+        exc_str = copy.deepcopy(message)
         self.line_num = line_num
         self.buffer = buf
         self.context = ''
+        if trace:
+            exc_str += '\n{0}\n'.format(trace)
         if self.line_num and self.buffer:
+
+            import salt.utils
             self.context = salt.utils.get_context(
                 self.buffer,
                 self.line_num,
                 marker=marker
             )
             exc_str += '; line {0}\n\n{1}'.format(
-                    self.line_num,
-                    self.context
+                self.line_num,
+                self.context
             )
         SaltException.__init__(self, exc_str)
+
+
+class SaltClientTimeout(SaltException):
+    '''
+    Thrown when a job sent through one of the Client interfaces times out
+
+    Takes the ``jid`` as a parameter
+    '''
+    def __init__(self, msg, jid=None, *args, **kwargs):
+        super(SaltClientTimeout, self).__init__(msg, *args, **kwargs)
+        self.jid = jid
 
 
 class SaltReqTimeoutError(SaltException):
@@ -139,6 +188,13 @@ class AuthorizationError(SaltException):
     '''
 
 
+class SaltDaemonNotRunning(SaltException):
+    '''
+    Throw when a running master/minion/syndic is not running but is needed to
+    perform the requested operation (e.g., eauth).
+    '''
+
+
 class SaltRunnerError(SaltException):
     '''
     Problem in runner
@@ -160,3 +216,56 @@ class SaltSystemExit(SystemExit):
         SystemExit.__init__(self, code)
         if msg:
             self.message = msg
+
+
+class SaltCloudException(SaltException):
+    '''
+    Generic Salt Cloud Exception
+    '''
+
+
+class SaltCloudSystemExit(SaltCloudException):
+    '''
+    This exception is raised when the execution should be stopped.
+    '''
+    def __init__(self, message, exit_code=salt.defaults.exitcodes.EX_GENERIC):
+        SaltCloudException.__init__(self, message)
+        self.message = message
+        self.exit_code = exit_code
+
+
+class SaltCloudConfigError(SaltCloudException):
+    '''
+    Raised when a configuration setting is not found and should exist.
+    '''
+
+
+class SaltCloudNotFound(SaltCloudException):
+    '''
+    Raised when some cloud provider function cannot find what's being searched.
+    '''
+
+
+class SaltCloudExecutionTimeout(SaltCloudException):
+    '''
+    Raised when too much time has passed while querying/waiting for data.
+    '''
+
+
+class SaltCloudExecutionFailure(SaltCloudException):
+    '''
+    Raised when too much failures have occurred while querying/waiting for data.
+    '''
+
+
+class SaltCloudPasswordError(SaltCloudException):
+    '''
+    Raise when virtual terminal password input failed
+    '''
+
+
+class NotImplemented(SaltException):
+    '''
+    Used when a module runs a command which returns an error and wants
+    to show the user the output gracefully instead of dying
+    '''

@@ -18,9 +18,9 @@ Download
 
 Salt Cloud can be downloaded and install via pypi or github:
 
-http://pypi.python.org/packages/source/s/salt-cloud/salt-cloud-0.8.2.tar.gz
+https://pypi.python.org/packages/source/s/salt-cloud/salt-cloud-0.8.2.tar.gz
 
-https://github.com/downloads/saltstack/salt-cloud/salt-cloud-0.8.2.tar.gz
+https://cloud.github.com/downloads/saltstack/salt-cloud/salt-cloud-0.8.2.tar.gz
 
 Some packages have been made available for salt-cloud and more on on their
 way. Packages for Arch, and FreeBSD are being made available thanks to the
@@ -50,7 +50,7 @@ os vs script
 ============
 
 In a cloud profile, you need to specify which deploy script to use to install
-Salt on the newly-provisioned VM. The option for this has always been 'os', 
+Salt on the newly-provisioned VM. The option for this has always been 'os',
 which has been confusing to some. As of this release, you may now specify
 'script' instead of 'os'. If you specify both, the value for 'script' will be
 used. See the SmartOS Deploy Script below for an example.
@@ -154,4 +154,3 @@ can also configure that in the same place:
 
 Check salt-cloud --help for a list of logging levels, which can also be
 specified from the command line.
-

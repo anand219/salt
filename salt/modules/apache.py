@@ -1,13 +1,32 @@
 # -*- coding: utf-8 -*-
 '''
 Support for Apache
+
+.. note::
+    The functions in here are generic functions designed to work with
+    all implementations of Apache. Debian-specific functions have been moved into
+    deb_apache.py, but will still load under the ``apache`` namespace when a
+    Debian-based system is detected.
 '''
 
 # Import python libs
-import os
+from __future__ import absolute_import, generators, print_function, with_statement
 import re
 import logging
-import urllib2
+
+# Import 3rd-party libs
+# pylint: disable=import-error,no-name-in-module
+import salt.ext.six as six
+from salt.ext.six.moves import cStringIO
+from salt.ext.six.moves.urllib.error import URLError
+from salt.ext.six.moves.urllib.request import (
+        HTTPBasicAuthHandler as _HTTPBasicAuthHandler,
+        HTTPDigestAuthHandler as _HTTPDigestAuthHandler,
+        urlopen as _urlopen,
+        build_opener as _build_opener,
+        install_opener as _install_opener
+)
+# pylint: enable=import-error,no-name-in-module
 
 # Import salt libs
 import salt.utils
@@ -40,7 +59,7 @@ def _detect_os():
 
 def version():
     '''
-    Return server version from apachectl -v
+    Return server version (``apachectl -v``)
 
     CLI Example:
 
@@ -56,7 +75,7 @@ def version():
 
 def fullversion():
     '''
-    Return server version from apachectl -V
+    Return server version (``apachectl -V``)
 
     CLI Example:
 
@@ -85,7 +104,7 @@ def fullversion():
 
 def modules():
     '''
-    Return list of static and shared modules from apachectl -M
+    Return list of static and shared modules (``apachectl -M``)
 
     CLI Example:
 
@@ -111,7 +130,7 @@ def modules():
 
 def servermods():
     '''
-    Return list of modules compiled into the server (apachectl -l)
+    Return list of modules compiled into the server (``apachectl -l``)
 
     CLI Example:
 
@@ -157,9 +176,10 @@ def directives():
 def vhosts():
     '''
     Show the settings as parsed from the config file (currently
-    only shows the virtualhost settings). (``apachectl -S``)
+    only shows the virtualhost settings) (``apachectl -S``).
     Because each additional virtual host adds to the execution
-    time, this command may require a long timeout be specified.
+    time, this command may require a long timeout be specified
+    by using ``-t 10``.
 
     CLI Example:
 
@@ -182,11 +202,19 @@ def vhosts():
             if comps[0] == 'default':
                 ret[namevhost]['default'] = {}
                 ret[namevhost]['default']['vhost'] = comps[2]
-                ret[namevhost]['default']['conf'] = re.sub(r'\(|\)', '', comps[3])
+                ret[namevhost]['default']['conf'] = re.sub(
+                    r'\(|\)',
+                    '',
+                    comps[3]
+                )
             if comps[0] == 'port':
                 ret[namevhost][comps[3]] = {}
                 ret[namevhost][comps[3]]['vhost'] = comps[3]
-                ret[namevhost][comps[3]]['conf'] = re.sub(r'\(|\)', '', comps[4])
+                ret[namevhost][comps[3]]['conf'] = re.sub(
+                    r'\(|\)',
+                    '',
+                    comps[4]
+                )
                 ret[namevhost][comps[3]]['port'] = comps[1]
     return ret
 
@@ -230,8 +258,10 @@ def signal(signal=None):
 
 def useradd(pwfile, user, password, opts=''):
     '''
-    Add an HTTP user using the htpasswd command. If the htpasswd file does not
+    Add HTTP user using the ``htpasswd`` command. If the ``htpasswd`` file does not
     exist, it will be created. Valid options that can be passed are:
+
+    .. code-block:: text
 
         n  Don't update file; display results on stdout.
         m  Force MD5 encryption of the password (default).
@@ -251,9 +281,9 @@ def useradd(pwfile, user, password, opts=''):
 
 def userdel(pwfile, user):
     '''
-    Delete an HTTP user from the specified htpasswd file.
+    Delete HTTP user from the specified ``htpasswd`` file.
 
-    CLI Examples:
+    CLI Example:
 
     .. code-block:: bash
 
@@ -262,115 +292,29 @@ def userdel(pwfile, user):
     return __salt__['webutil.userdel'](pwfile, user)
 
 
-def check_site_enabled(site):
-    '''
-    Checks to see if the specific Site symlink is in /etc/apache2/sites-enabled.
-
-    This will only be functional on Debian-based operating systems (Ubuntu,
-    Mint, etc).
-
-    CLI Examples:
-
-    .. code-block:: bash
-
-        salt '*' apache.check_site_enabled example.com
-    '''
-    if os.path.islink('/etc/apache2/sites-enabled/{0}'.format(site)):
-        return True
-    elif site == 'default' and os.path.islink('/etc/apache2/sites-enabled/000-{0}'.format(site)):
-        return True
-    else:
-        return False
-
-
-def a2ensite(site):
-    '''
-    Runs a2ensite for the given site.
-
-    This will only be functional on Debian-based operating systems (Ubuntu,
-    Mint, etc).
-
-    CLI Examples:
-
-    .. code-block:: bash
-
-        salt '*' apache.a2ensite example.com
-    '''
-    ret = {}
-    command = ['a2ensite', site]
-
-    try:
-        status = __salt__['cmd.retcode'](command, python_shell=False)
-    except Exception as e:
-        return e
-
-    ret['Name'] = 'Apache2 Enable Site'
-    ret['Site'] = site
-
-    if status == 1:
-        ret['Status'] = 'Site {0} Not found'.format(site)
-    elif status == 0:
-        ret['Status'] = 'Site {0} enabled'.format(site)
-    else:
-        ret['Status'] = status
-
-    return ret
-
-
-def a2dissite(site):
-    '''
-    Runs a2dissite for the given site.
-
-    This will only be functional on Debian-based operating systems (Ubuntu,
-    Mint, etc).
-
-    CLI Examples:
-
-    .. code-block:: bash
-
-        salt '*' apache.a2dissite example.com
-    '''
-    ret = {}
-    command = ['a2dissite', site]
-
-    try:
-        status = __salt__['cmd.retcode'](command, python_shell=False)
-    except Exception as e:
-        return e
-
-    ret['Name'] = 'Apache2 Disable Site'
-    ret['Site'] = site
-
-    if status == 256:
-        ret['Status'] = 'Site {0} Not found'.format(site)
-    elif status == 0:
-        ret['Status'] = 'Site {0} disabled'.format(site)
-    else:
-        ret['Status'] = status
-
-    return ret
-
-
 def server_status(profile='default'):
     '''
     Get Information from the Apache server-status handler
 
-    NOTE:
-    the server-status handler is disabled by default.
-    in order for this function to work it needs to be enabled.
-    http://httpd.apache.org/docs/2.2/mod/mod_status.html
+    .. note::
 
-    The following configuration needs to exists in pillar/grains
-    each entry nested in apache.server-status is a profile of a vhost/server
-    this would give support for multiple apache servers/vhosts
+        The server-status handler is disabled by default.
+        In order for this function to work it needs to be enabled.
+        See http://httpd.apache.org/docs/2.2/mod/mod_status.html
 
-    apache.server-status:
-      'default':
-        'url': http://localhost/server-status
-        'user': someuser
-        'pass': password
-        'realm': 'authentication realm for digest passwords'
-        'timeout': 5
+    The following configuration needs to exists in pillar/grains.
+    Each entry nested in ``apache.server-status`` is a profile of a vhost/server.
+    This would give support for multiple apache servers/vhosts.
+
+    .. code-block:: yaml
+
+        apache.server-status:
+          default:
+            url: http://localhost/server-status
+            user: someuser
+            pass: password
+            realm: 'authentication realm for digest passwords'
+            timeout: 5
 
     CLI Examples:
 
@@ -396,25 +340,40 @@ def server_status(profile='default'):
     }
 
     # Get configuration from pillar
-    url = __salt__['config.get']('apache.server-status:{0}:url'.format(profile), 'http://localhost/server-status')
-    user = __salt__['config.get']('apache.server-status:{0}:user'.format(profile), '')
-    passwd = __salt__['config.get']('apache.server-status:{0}:pass'.format(profile), '')
-    realm = __salt__['config.get']('apache.server-status:{0}:realm'.format(profile), '')
-    timeout = __salt__['config.get']('apache.server-status:{0}:timeout'.format(profile), 5)
+    url = __salt__['config.get'](
+        'apache.server-status:{0}:url'.format(profile),
+        'http://localhost/server-status'
+    )
+    user = __salt__['config.get'](
+        'apache.server-status:{0}:user'.format(profile),
+        ''
+    )
+    passwd = __salt__['config.get'](
+        'apache.server-status:{0}:pass'.format(profile),
+        ''
+    )
+    realm = __salt__['config.get'](
+        'apache.server-status:{0}:realm'.format(profile),
+        ''
+    )
+    timeout = __salt__['config.get'](
+        'apache.server-status:{0}:timeout'.format(profile),
+        5
+    )
 
     # create authentication handler if configuration exists
     if user and passwd:
-        basic = urllib2.HTTPBasicAuthHandler()
+        basic = _HTTPBasicAuthHandler()
         basic.add_password(realm=realm, uri=url, user=user, passwd=passwd)
-        digest = urllib2.HTTPDigestAuthHandler()
+        digest = _HTTPDigestAuthHandler()
         digest.add_password(realm=realm, uri=url, user=user, passwd=passwd)
-        urllib2.install_opener(urllib2.build_opener(basic, digest))
+        _install_opener(_build_opener(basic, digest))
 
     # get http data
     url += '?auto'
     try:
-        response = urllib2.urlopen(url, timeout=timeout).read().splitlines()
-    except urllib2.URLError:
+        response = _urlopen(url, timeout=timeout).read().splitlines()
+    except URLError:
         return 'error'
 
     # parse the data
@@ -434,3 +393,64 @@ def server_status(profile='default'):
 
     # return the good stuff
     return ret
+
+
+def _parse_config(conf, slot=None):
+    ret = cStringIO()
+    if isinstance(conf, str):
+        if slot:
+            print('{0} {1}'.format(slot, conf), file=ret, end='')
+        else:
+            print('{0}'.format(conf), file=ret, end='')
+    elif isinstance(conf, list):
+        for value in conf:
+            print(_parse_config(value, str(slot)), file=ret)
+    elif isinstance(conf, dict):
+        print('<{0} {1}>'.format(
+            slot,
+            _parse_config(conf['this'])),
+            file=ret
+        )
+        del conf['this']
+        for key, value in six.iteritems(conf):
+            if isinstance(value, str):
+                print('{0} {1}'.format(key, value), file=ret)
+            elif isinstance(value, list):
+                print(_parse_config(value, key), file=ret)
+            elif isinstance(value, dict):
+                print(_parse_config(value, key), file=ret)
+        print('</{0}>'.format(slot), file=ret, end='')
+
+    ret.seek(0)
+    return ret.read()
+
+
+def config(name, config, edit=True):
+    '''
+    Create VirtualHost configuration files
+
+    name
+        File for the virtual host
+    config
+        VirtualHost configurations
+
+    .. note::
+
+        This function is not meant to be used from the command line.
+        Config is meant to be an ordered dict of all of the apache configs.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' apache.config /etc/httpd/conf.d/ports.conf config="[{'Listen': '22'}]"
+    '''
+
+    for entry in config:
+        key = next(six.iterkeys(entry))
+        configs = _parse_config(entry[key], key)
+        if edit:
+            with salt.utils.fopen(name, 'w') as configfile:
+                configfile.write('# This file is managed by saltstack.\n')
+                configfile.write(configs)
+    return configs

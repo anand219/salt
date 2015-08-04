@@ -5,6 +5,7 @@ A module to wrap pacman calls, since Arch is the best
 '''
 
 # Import python libs
+from __future__ import absolute_import
 import copy
 import logging
 import re
@@ -12,6 +13,9 @@ import re
 # Import salt libs
 import salt.utils
 from salt.exceptions import CommandExecutionError, MinionError
+
+# Import 3rd-party libs
+import salt.ext.six as six
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +55,7 @@ def latest_version(*names, **kwargs):
         salt '*' pkg.latest_version <package name>
         salt '*' pkg.latest_version <package1> <package2> <package3> ...
     '''
-    refresh = salt.utils.is_true(kwargs.pop('refresh', True))
+    refresh = salt.utils.is_true(kwargs.pop('refresh', False))
 
     if len(names) == 0:
         return ''
@@ -66,7 +70,7 @@ def latest_version(*names, **kwargs):
         ret[name] = ''
     cmd = 'pacman -Sp --needed --print-format "%n %v" ' \
           '{0}'.format(' '.join(names))
-    out = __salt__['cmd.run_stdout'](cmd, output_loglevel='debug')
+    out = __salt__['cmd.run_stdout'](cmd, output_loglevel='trace')
     for line in out.splitlines():
         try:
             name, version_num = line.split()
@@ -108,7 +112,7 @@ def upgrade_available(name):
     return latest_version(name) != ''
 
 
-def list_upgrades():
+def list_upgrades(refresh=False):
     '''
     List all available package upgrades on this system
 
@@ -119,11 +123,30 @@ def list_upgrades():
         salt '*' pkg.list_upgrades
     '''
     upgrades = {}
-    out = __salt__['cmd.run'](
-        'pacman -Sypu --print-format "%n %v" | egrep -v ' r'"^\s|^:"',
-        output_loglevel='debug'
-    )
-    for line in out.splitlines():
+    options = ['-S', '-p', '-u', '--print-format "%n %v"']
+
+    if refresh:
+        options.append('-y')
+
+    cmd = ('pacman {0}').format(' '.join(options))
+
+    call = __salt__['cmd.run_all'](cmd, output_loglevel='trace')
+
+    if call['retcode'] != 0:
+        comment = ''
+        if 'stderr' in call:
+            comment += call['stderr']
+        if 'stdout' in call:
+            comment += call['stdout']
+        raise CommandExecutionError(
+            '{0}'.format(comment)
+        )
+    else:
+        out = call['stdout']
+
+    output = iter(out.splitlines())
+    next(output)  # Skip informational output line
+    for line in output:
         comps = line.split(' ')
         if len(comps) < 2:
             continue
@@ -160,8 +183,9 @@ def list_pkgs(versions_as_list=False, **kwargs):
         salt '*' pkg.list_pkgs
     '''
     versions_as_list = salt.utils.is_true(versions_as_list)
-    # 'removed' not yet implemented or not applicable
-    if salt.utils.is_true(kwargs.get('removed')):
+    # not yet implemented or not applicable
+    if any([salt.utils.is_true(kwargs.get(x))
+            for x in ('removed', 'purge_desired')]):
         return {}
 
     if 'pkg.list_pkgs' in __context__:
@@ -174,7 +198,7 @@ def list_pkgs(versions_as_list=False, **kwargs):
 
     cmd = 'pacman -Q'
     ret = {}
-    out = __salt__['cmd.run'](cmd, output_loglevel='debug')
+    out = __salt__['cmd.run'](cmd, output_loglevel='trace')
     for line in out.splitlines():
         if not line:
             continue
@@ -207,7 +231,19 @@ def refresh_db():
     '''
     cmd = 'LANG=C pacman -Sy'
     ret = {}
-    out = __salt__['cmd.run'](cmd, output_loglevel='debug')
+    call = __salt__['cmd.run_all'](cmd, output_loglevel='trace',
+            python_shell=True)
+    if call['retcode'] != 0:
+        comment = ''
+        if 'stderr' in call:
+            comment += call['stderr']
+
+        raise CommandExecutionError(
+            '{0}'.format(comment)
+        )
+    else:
+        out = call['stdout']
+
     for line in out.splitlines():
         if line.strip().startswith('::'):
             continue
@@ -223,12 +259,14 @@ def refresh_db():
 
 
 def install(name=None,
-            refresh=True,
+            refresh=False,
+            sysupgrade=False,
             pkgs=None,
             sources=None,
             **kwargs):
     '''
-    Install the passed package, add refresh=True to install with an -Sy.
+    Install (pacman -S) the passed package, add refresh=True to install with
+    -y, add sysupgrade=True to install with -u.
 
     name
         The name of the package to be installed. Note that this parameter is
@@ -245,6 +283,9 @@ def install(name=None,
 
     refresh
         Whether or not to refresh the package database before installing.
+
+    sysupgrade
+        Whether or not to upgrade the system packages before installing.
 
 
     Multiple Package Installation Options:
@@ -273,7 +314,9 @@ def install(name=None,
 
         .. code-block:: bash
 
-            salt '*' pkg.install sources='[{"foo": "salt://foo.pkg.tar.xz"},{"bar": "salt://bar.pkg.tar.xz"}]'
+            salt '*' pkg.install \
+                sources='[{"foo": "salt://foo.pkg.tar.xz"}, \
+                {"bar": "salt://bar.pkg.tar.xz"}]'
 
 
     Returns a dict containing the new package names and versions::
@@ -307,7 +350,8 @@ def install(name=None,
     elif pkg_type == 'repository':
         targets = []
         problems = []
-        for param, version_num in pkg_params.iteritems():
+        options = ['--noprogressbar', '--noconfirm', '--needed']
+        for param, version_num in six.iteritems(pkg_params):
             if version_num is None:
                 targets.append(param)
             else:
@@ -329,22 +373,25 @@ def install(name=None,
             return {}
 
         if salt.utils.is_true(refresh):
-            cmd = 'pacman -Syu --noprogressbar --noconfirm ' \
-                  '"{0}"'.format('" "'.join(targets))
-        else:
-            cmd = 'pacman -S --noprogressbar --noconfirm ' \
-                  '"{0}"'.format('" "'.join(targets))
+            options.append('-y')
+        if salt.utils.is_true(sysupgrade):
+            options.append('-u')
+
+        cmd = 'pacman -S "{0}"'.format('" "'.join(options+targets))
 
     old = list_pkgs()
-    __salt__['cmd.run'](cmd, output_loglevel='debug')
+    __salt__['cmd.run'](cmd, output_loglevel='trace')
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
     return salt.utils.compare_dicts(old, new)
 
 
-def upgrade():
+def upgrade(refresh=False):
     '''
     Run a full system upgrade, a pacman -Syu
+
+    refresh
+        Whether or not to refresh the package database before installing.
 
     Return a dict containing the new package names and versions::
 
@@ -357,12 +404,27 @@ def upgrade():
 
         salt '*' pkg.upgrade
     '''
+    ret = {'changes': {},
+           'result': True,
+           'comment': '',
+           }
+
     old = list_pkgs()
-    cmd = 'pacman -Syu --noprogressbar --noconfirm'
-    __salt__['cmd.run'](cmd, output_loglevel='debug')
-    __context__.pop('pkg.list_pkgs', None)
-    new = list_pkgs()
-    return salt.utils.compare_dicts(old, new)
+    cmd = 'pacman -Su --noprogressbar --noconfirm'
+    if salt.utils.is_true(refresh):
+        cmd += ' -y'
+    call = __salt__['cmd.run_all'](cmd, output_loglevel='trace')
+    if call['retcode'] != 0:
+        ret['result'] = False
+        if 'stderr' in call:
+            ret['comment'] += call['stderr']
+        if 'stdout' in call:
+            ret['comment'] += call['stdout']
+    else:
+        __context__.pop('pkg.list_pkgs', None)
+        new = list_pkgs()
+        ret['changes'] = salt.utils.compare_dicts(old, new)
+    return ret
 
 
 def _uninstall(action='remove', name=None, pkgs=None, **kwargs):
@@ -380,9 +442,12 @@ def _uninstall(action='remove', name=None, pkgs=None, **kwargs):
     if not targets:
         return {}
     remove_arg = '-Rsc' if action == 'purge' else '-R'
-    cmd = 'pacman {0} --noprogressbar --noconfirm {1}'.format(remove_arg,
-                                                              ' '.join(targets))
-    __salt__['cmd.run'](cmd, output_loglevel='debug')
+    cmd = (
+        'pacman {0} '
+        '--noprogressbar '
+        '--noconfirm {1}'
+    ).format(remove_arg, ' '.join(targets))
+    __salt__['cmd.run'](cmd, output_loglevel='trace')
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
     return salt.utils.compare_dicts(old, new)
@@ -466,7 +531,7 @@ def file_list(*packages):
     errors = []
     ret = []
     cmd = 'pacman -Ql {0}'.format(' '.join(packages))
-    out = __salt__['cmd.run'](cmd, output_loglevel='debug')
+    out = __salt__['cmd.run'](cmd, output_loglevel='trace')
     for line in out.splitlines():
         if line.startswith('error'):
             errors.append(line)
@@ -493,7 +558,7 @@ def file_dict(*packages):
     errors = []
     ret = {}
     cmd = 'pacman -Ql {0}'.format(' '.join(packages))
-    out = __salt__['cmd.run'](cmd, output_loglevel='debug')
+    out = __salt__['cmd.run'](cmd, output_loglevel='trace')
     for line in out.splitlines():
         if line.startswith('error'):
             errors.append(line)
@@ -503,3 +568,31 @@ def file_dict(*packages):
                 ret[comps[0]] = []
             ret[comps[0]].append((' '.join(comps[1:])))
     return {'errors': errors, 'packages': ret}
+
+
+def owner(*paths):
+    '''
+    .. versionadded:: 2014.7.0
+
+    Return the name of the package that owns the file. Multiple file paths can
+    be passed. Like :mod:`pkg.version <salt.modules.yumpkg.version`, if a
+    single path is passed, a string will be returned, and if multiple paths are
+    passed, a dictionary of file/package name pairs will be returned.
+
+    If the file is not owned by a package, or is not present on the minion,
+    then an empty string will be returned for that path.
+
+    CLI Example:
+
+        salt '*' pkg.owner /usr/bin/apachectl
+        salt '*' pkg.owner /usr/bin/apachectl /usr/bin/zsh
+    '''
+    if not paths:
+        return ''
+    ret = {}
+    cmd = 'pacman -Qqo {0!r}'
+    for path in paths:
+        ret[path] = __salt__['cmd.run_stdout'](cmd.format(path))
+    if len(ret) == 1:
+        return next(six.itervalues(ret))
+    return ret

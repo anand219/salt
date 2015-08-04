@@ -5,6 +5,8 @@
 Synopsis
 ========
 
+.. code-block:: bash
+
     salt-ssh '*' [ options ] sys.doc
 
     salt-ssh -E '.*' [ options ] sys.doc cmd
@@ -21,6 +23,10 @@ Options
 
     Execute a raw shell command.
 
+.. option:: --priv
+
+    Specify the SSH private key file to be used for authentication.
+
 .. option:: --roster
 
     Define which roster system to use, this defines if a database backend,
@@ -32,7 +38,7 @@ Options
     default roster file is called ``roster`` and is found in the same directory
     as the master config file.
 
-    .. versionadded:: 2014.1.0 (Hydrogen)
+    .. versionadded:: 2014.1.0
 
 .. option:: --refresh, --refresh-cache
 
@@ -47,9 +53,21 @@ Options
     the more running process the faster communication should be, default
     is 25.
 
+.. option:: -i, --ignore-host-keys
+
+    Disables StrictHostKeyChecking to relax acceptance of new and unknown
+    host keys. 
+
+.. option:: --no-host-keys
+
+    Fully ignores ssh host keys which by default are honored and connections
+    would ask for approval. Useful if the host key of a remote server has 
+    changed and would still error with --ignore-host-keys.
+
+
 .. option:: --passwd
 
-    Set te default password to attempt to use when authenticating.
+    Set the default password to attempt to use when authenticating.
 
 .. option:: --key-deploy
 

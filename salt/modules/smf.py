@@ -4,6 +4,9 @@ Service support for Solaris 10 and 11, should work with other systems
 that use SMF also. (e.g. SmartOS)
 '''
 
+# Import Python libs
+from __future__ import absolute_import
+
 __func_alias__ = {
     'reload_': 'reload'
 }
@@ -16,31 +19,43 @@ def __virtual__():
     '''
     Only work on systems which default to SMF
     '''
-    # Don't let this work on Solaris 9 since SMF doesn't exist on it.
-    enable = set((
-        'Solaris',
-        'SmartOS',
-    ))
-    if __grains__['os'] in enable:
-        if __grains__['os'] == 'Solaris' and __grains__['kernelrelease'] == "5.9":
+    if 'Solaris' in __grains__['os_family']:
+        # Don't let this work on Solaris 9 since SMF doesn't exist on it.
+        if __grains__['kernelrelease'] == "5.9":
             return False
         return __virtualname__
     return False
 
 
-def get_enabled():
+def _get_enabled_disabled(enabled_prop="true"):
     '''
-    Return the enabled services
+    DRY: Get all service FMRIs and their enabled property
+    '''
+    ret = set()
+    cmd = '/usr/bin/svcprop -c -p general/enabled "*"'
+    lines = __salt__['cmd.run_stdout'](cmd, python_shell=False).splitlines()
+    for line in lines:
+        comps = line.split()
+        if not comps:
+            continue
+        if comps[2] == enabled_prop:
+            ret.add(comps[0].split("/:properties")[0])
+    return sorted(ret)
+
+
+def get_running():
+    '''
+    Return the running services
 
     CLI Example:
 
     .. code-block:: bash
 
-        salt '*' service.get_enabled
+        salt '*' service.get_running
     '''
     ret = set()
-    cmd = 'svcs -H -o SVC,STATE -s SVC'
-    lines = __salt__['cmd.run'](cmd).splitlines()
+    cmd = '/usr/bin/svcs -H -o FMRI,STATE -s FMRI'
+    lines = __salt__['cmd.run'](cmd, python_shell=False).splitlines()
     for line in lines:
         comps = line.split()
         if not comps:
@@ -50,24 +65,24 @@ def get_enabled():
     return sorted(ret)
 
 
-def get_disabled():
+def get_stopped():
     '''
-    Return the disabled services
+    Return the stopped services
 
     CLI Example:
 
     .. code-block:: bash
 
-        salt '*' service.get_disabled
+        salt '*' service.get_stopped
     '''
     ret = set()
-    cmd = 'svcs -aH -o SVC,STATE -s SVC'
-    lines = __salt__['cmd.run'](cmd).splitlines()
+    cmd = '/usr/bin/svcs -aH -o FMRI,STATE -s FMRI'
+    lines = __salt__['cmd.run'](cmd, python_shell=False).splitlines()
     for line in lines:
         comps = line.split()
         if not comps:
             continue
-        if not 'online' in line and not 'legacy_run' in line:
+        if 'online' not in line and 'legacy_run' not in line:
             ret.add(comps[0])
     return sorted(ret)
 
@@ -77,12 +92,17 @@ def available(name):
     Returns ``True`` if the specified service is available, otherwise returns
     ``False``.
 
+    We look up the name with the svcs command to get back the FMRI
+    This allows users to use simpler service names
+
     CLI Example:
 
     .. code-block:: bash
 
         salt '*' service.available net-snmp
     '''
+    cmd = '/usr/bin/svcs -H -o FMRI {0}'.format(name)
+    name = __salt__['cmd.run'](cmd, python_shell=False)
     return name in get_all()
 
 
@@ -98,7 +118,9 @@ def missing(name):
 
         salt '*' service.missing net-snmp
     '''
-    return not name in get_all()
+    cmd = '/usr/bin/svcs -H -o FMRI {0}'.format(name)
+    name = __salt__['cmd.run'](cmd, python_shell=False)
+    return name not in get_all()
 
 
 def get_all():
@@ -112,7 +134,7 @@ def get_all():
         salt '*' service.get_all
     '''
     ret = set()
-    cmd = 'svcs -aH -o SVC,STATE -s SVC'
+    cmd = '/usr/bin/svcs -aH -o FMRI,STATE -s FMRI'
     lines = __salt__['cmd.run'](cmd).splitlines()
     for line in lines:
         comps = line.split()
@@ -132,8 +154,18 @@ def start(name):
 
         salt '*' service.start <service name>
     '''
-    cmd = '/usr/sbin/svcadm enable -t {0}'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    cmd = '/usr/sbin/svcadm enable -s -t {0}'.format(name)
+    retcode = __salt__['cmd.retcode'](cmd, python_shell=False)
+    if not retcode:
+        return True
+    if retcode == 3:
+        # Return code 3 means there was a problem with the service
+        # A common case is being in the 'maintenance' state
+        # Attempt a clear and try one more time
+        clear_cmd = '/usr/sbin/svcadm clear {0}'.format(name)
+        __salt__['cmd.retcode'](clear_cmd, python_shell=False)
+        return not __salt__['cmd.retcode'](cmd, python_shell=False)
+    return False
 
 
 def stop(name):
@@ -146,8 +178,8 @@ def stop(name):
 
         salt '*' service.stop <service name>
     '''
-    cmd = '/usr/sbin/svcadm disable -t {0}'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    cmd = '/usr/sbin/svcadm disable -s -t {0}'.format(name)
+    return not __salt__['cmd.retcode'](cmd, python_shell=False)
 
 
 def restart(name):
@@ -161,7 +193,11 @@ def restart(name):
         salt '*' service.restart <service name>
     '''
     cmd = '/usr/sbin/svcadm restart {0}'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    if not __salt__['cmd.retcode'](cmd, python_shell=False):
+        # calling restart doesn't clear maintenance
+        # or tell us that the service is in the 'online' state
+        return start(name)
+    return False
 
 
 def reload_(name):
@@ -175,7 +211,11 @@ def reload_(name):
         salt '*' service.reload <service name>
     '''
     cmd = '/usr/sbin/svcadm refresh {0}'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    if not __salt__['cmd.retcode'](cmd, python_shell=False):
+        # calling reload doesn't clear maintenance
+        # or tell us that the service is in the 'online' state
+        return start(name)
+    return False
 
 
 def status(name, sig=None):
@@ -190,7 +230,7 @@ def status(name, sig=None):
         salt '*' service.status <service name>
     '''
     cmd = '/usr/bin/svcs -H -o STATE {0}'.format(name)
-    line = __salt__['cmd.run'](cmd)
+    line = __salt__['cmd.run'](cmd, python_shell=False)
     if line == 'online':
         return True
     else:
@@ -208,7 +248,7 @@ def enable(name, **kwargs):
         salt '*' service.enable <service name>
     '''
     cmd = '/usr/sbin/svcadm enable {0}'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    return not __salt__['cmd.retcode'](cmd, python_shell=False)
 
 
 def disable(name, **kwargs):
@@ -222,10 +262,10 @@ def disable(name, **kwargs):
         salt '*' service.disable <service name>
     '''
     cmd = '/usr/sbin/svcadm disable {0}'.format(name)
-    return not __salt__['cmd.retcode'](cmd)
+    return not __salt__['cmd.retcode'](cmd, python_shell=False)
 
 
-def enabled(name):
+def enabled(name, **kwargs):
     '''
     Check to see if the named service is enabled to start on boot
 
@@ -235,7 +275,17 @@ def enabled(name):
 
         salt '*' service.enabled <service name>
     '''
-    return name in get_enabled()
+    # The property that reveals whether a service is enabled
+    # can only be queried using the full FMRI
+    # We extract the FMRI and then do the query
+    fmri_cmd = '/usr/bin/svcs -H -o FMRI {0}'.format(name)
+    fmri = __salt__['cmd.run'](fmri_cmd, python_shell=False)
+    cmd = '/usr/sbin/svccfg -s {0} listprop general/enabled'.format(fmri)
+    comps = __salt__['cmd.run'](cmd, python_shell=False).split()
+    if comps[2] == 'true':
+        return True
+    else:
+        return False
 
 
 def disabled(name):
@@ -248,4 +298,32 @@ def disabled(name):
 
         salt '*' service.disabled <service name>
     '''
-    return name in get_disabled()
+    return not enabled(name)
+
+
+def get_enabled():
+    '''
+    Return the enabled services
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' service.get_enabled
+    '''
+    # Note that this returns the full FMRI
+    return _get_enabled_disabled("true")
+
+
+def get_disabled():
+    '''
+    Return the disabled services
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' service.get_disabled
+    '''
+    # Note that this returns the full FMRI
+    return _get_enabled_disabled("false")

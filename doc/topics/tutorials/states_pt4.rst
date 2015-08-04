@@ -33,6 +33,18 @@ same relative path in more than one root, then the top-most match "wins". For
 example, if ``/srv/salt/foo.txt`` and ``/mnt/salt-nfs/base/foo.txt`` both
 exist, then ``salt://foo.txt`` will point to ``/srv/salt/foo.txt``.
 
+.. note::
+
+    When using multiple fileserver backends, the order in which they are listed
+    in the :conf_master:`fileserver_backend` parameter also matters. If both
+    ``roots`` and ``git`` backends contain a file with the same relative path,
+    and ``roots`` appears before ``git`` in the
+    :conf_master:`fileserver_backend` list, then the file in ``roots`` will
+    "win", and the file in gitfs will be ignored.
+
+    A more thorough explanation of how Salt's modular fileserver works can be
+    found :ref:`here <file-server-backends>`. We recommend reading this.
+
 Environment configuration
 =========================
 
@@ -177,16 +189,19 @@ to within ``/srv/salt/prod``, they are still available from the same
 ``salt://`` URI in both the qa and dev environments.
 
 
-Continue learning
+Continue Learning
 =================
 
 The best way to continue learning about Salt States is to read through the
 :doc:`reference documentation </ref/states/index>` and to look through examples
-of existing :term:`state trees <state tree>`. Many pre-configured state trees
-can be found on Github in the `saltstack-formulas`_ collection of repositories.
+of existing state trees. Many pre-configured state trees
+can be found on GitHub in the `saltstack-formulas`_ collection of repositories.
 
 .. _`saltstack-formulas`: https://github.com/saltstack-formulas
 
 If you have any questions, suggestions, or just want to chat with other people
-who are using Salt, we have a very :doc:`active community </topics/community>`
+who are using Salt, we have a very :ref:`active community <salt-community>`
 and we'd love to hear from you.
+
+In addition, by continuing to :doc:`part 5 <states_pt5>`, you can learn about
+the powerful orchestration of which Salt is capable.

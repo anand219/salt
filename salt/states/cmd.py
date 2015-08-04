@@ -21,9 +21,33 @@ no disk space:
 
     > /var/log/messages:
       cmd.run:
-        - unless: echo 'foo' > /tmp/.test
+        - unless: echo 'foo' > /tmp/.test && rm -f /tmp/.test
 
-Note that when executing a command or script, the state (i.e., changed or not)
+Only run if the file specified by ``creates`` does not exist, in this case
+touch /tmp/foo if it does not exist.
+
+.. code-block:: yaml
+
+    touch /tmp/foo:
+      cmd.run:
+        - creates: /tmp/foo
+
+.. note::
+
+    The ``creates`` option was added to version 2014.7.0
+
+Salt determines whether the ``cmd`` state is successfully enforced based on the exit
+code returned by the command. If the command returns a zero exit code, then salt
+determines that the state was successfully enforced. If the script returns a non-zero
+exit code, then salt determines that it failed to successfully enforce the state.
+If a command returns a non-zero exit code but you wish to treat this as a success,
+then you must place the command in a script and explicitly set the exit code of
+the script to zero.
+
+Please note that the success or failure of the state is not affected by whether a state
+change occurred nor the stateful argument.
+
+When executing a command or script, the state (i.e., changed or not)
 of the command is unknown to Salt's state system. Therefore, by default, the
 ``cmd`` state assumes that any command execution results in a changed state.
 
@@ -58,33 +82,62 @@ a simple protocol described below:
    state.`
 
    Here's an example of how one might write a shell script for use with a
-   stateful command::
+   stateful command:
 
-    #!/bin/bash
-    #
-    echo "Working hard..."
+   .. code-block:: bash
 
-    # writing the state line
-    echo  # an empty line here so the next line will be the last.
-    echo "changed=yes comment='something has changed' whatever=123"
+       #!/bin/bash
+       #
+       echo "Working hard..."
 
-   And an example SLS file using this module::
+       # writing the state line
+       echo  # an empty line here so the next line will be the last.
+       echo "changed=yes comment='something has changed' whatever=123"
 
-    Run myscript:
-      cmd.run:
-        - name: /path/to/myscript
-        - cwd: /
-        - stateful: True
+   And an example SLS file using this module:
 
-    Run only if myscript changed something:
-      cmd.wait:
-        - name: echo hello
-        - cwd: /
-        - watch:
-            - cmd: Run myscript
+   .. code-block:: yaml
+
+       Run myscript:
+         cmd.run:
+           - name: /path/to/myscript
+           - cwd: /
+           - stateful: True
+
+       Run only if myscript changed something:
+         cmd.wait:
+           - name: echo hello
+           - cwd: /
+           - watch:
+               - cmd: Run myscript
 
    Note that if the ``cmd.wait`` state also specifies ``stateful: True`` it can
    then be watched by some other states as well.
+
+4. :strong:`The stateful argument can optionally include a test_name parameter.`
+
+   This is used to specify a command to run in test mode.  This command should
+   return stateful data for changes that would be made by the command in the
+   name parameter.
+
+   .. versionadded:: 2015.2.0
+
+   .. code-block:: yaml
+
+       Run myscript:
+         cmd.run:
+           - name: /path/to/myscript
+           - cwd: /
+           - stateful:
+             - test_name: /path/to/myscript test
+
+       Run masterscript:
+         cmd.script:
+           - name: masterscript
+           - source: salt://path/to/masterscript
+           - cwd: /
+           - stateful:
+             - test_name: masterscript test
 
 ``cmd.wait`` is not restricted to watching only cmd states. For example
 it can also watch a git state for changes
@@ -118,63 +171,61 @@ executed when the state it is watching changes. Example:
 .. code-block:: yaml
 
     /usr/local/bin/postinstall.sh:
-      cmd:
-        - wait
+      cmd.wait:
         - watch:
           - pkg: mycustompkg
-      file:
-        - managed
+      file.managed:
         - source: salt://utils/scripts/postinstall.sh
 
     mycustompkg:
-      pkg:
-        - installed
+      pkg.installed:
         - require:
           - file: /usr/local/bin/postinstall.sh
 
-How do I create a environment from a pillar map?
----------------------------------------------------------------------------------------------
+How do I create an environment from a pillar map?
+-------------------------------------------------
 
-The map that comes from a pillar cannot be directly consumed by the env option. To use it
-one must convert it to a list. Example:
+The map that comes from a pillar cannot be directly consumed by the env option.
+To use it one must convert it to a list. Example:
 
 .. code-block:: yaml
 
     printenv:
-    cmd.run:
+      cmd.run:
         - env:
-            {% for key, value in pillar['keys'].iteritems() %}
-             - '{{ key }}': '{{ value }}'
-            {% endfor %}
+          {% for key, value in pillar['keys'].iteritems() %}
+          - '{{ key }}': '{{ value }}'
+          {% endfor %}
 
 '''
 
 # Import python libs
+from __future__ import absolute_import
+
 # Windows platform has no 'grp' module
+import os
+import copy
+import json
+import shlex
+import logging
+
 HAS_GRP = False
 try:
     import grp
     HAS_GRP = True
 except ImportError:
     pass
-import os
-import copy
-import json
-import shlex
-import logging
-import yaml
 
 # Import salt libs
-import salt.utils
 from salt.exceptions import CommandExecutionError, SaltRenderError
-from salt._compat import string_types
+from salt.ext.six import string_types
 
 log = logging.getLogger(__name__)
 
 
 def _reinterpreted_state(state):
     '''
-    Re-interpret the state returned by salt.sate.run using our protocol.
+    Re-interpret the state returned by salt.state.run using our protocol.
     '''
     ret = state['changes']
     state['changes'] = {}
@@ -195,7 +246,7 @@ def _reinterpreted_state(state):
                 'script JSON output must be a JSON object (e.g., {})!'
             )
         is_json = True
-    except Exception:
+    except ValueError:
         idx = out.rstrip().rfind('\n')
         if idx != -1:
             out = out[idx + 1:]
@@ -205,11 +256,13 @@ def _reinterpreted_state(state):
                 key, val = item.split('=')
                 data[key] = val
         except ValueError:
-            return _failout(
+            state = _failout(
                 state,
                 'Failed parsing script output! '
                 'Stdout must be JSON or a line of name=value pairs.'
             )
+            state['changes'].update(ret)
+            return state
 
     changed = _is_true(data.get('changed', 'no'))
 
@@ -246,7 +299,7 @@ def _is_true(val):
     raise ValueError('Failed parsing boolean value: {0}'.format(val))
 
 
-def _run_check(cmd_kwargs, onlyif, unless, group):
+def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
     '''
     Execute the onlyif and unless logic.
     Return a result dict if:
@@ -255,6 +308,10 @@ def _run_check(cmd_kwargs, onlyif, unless, group):
     * unless succeeded (unless == 0)
     else return True
     '''
+    # never use VT for onlyif/unless executions because this will lead
+    # to quote problems
+    cmd_kwargs = copy.deepcopy(cmd_kwargs)
+    cmd_kwargs['use_vt'] = False
     if group and HAS_GRP:
         try:
             egid = grp.getgrnam(group).gr_gid
@@ -265,24 +322,60 @@ def _run_check(cmd_kwargs, onlyif, unless, group):
                     'result': False}
 
     if onlyif is not None:
-        if not isinstance(onlyif, string_types):
-            if not onlyif:
+        if isinstance(onlyif, string_types):
+            cmd = __salt__['cmd.retcode'](onlyif, ignore_retcode=True, python_shell=True, **cmd_kwargs)
+            log.debug('Last command return code: {0}'.format(cmd))
+            if cmd != 0:
                 return {'comment': 'onlyif execution failed',
+                        'skip_watch': True,
                         'result': True}
-        elif isinstance(onlyif, string_types):
-            if __salt__['cmd.retcode'](onlyif, **cmd_kwargs) != 0:
+        elif isinstance(onlyif, list):
+            for entry in onlyif:
+                cmd = __salt__['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_kwargs)
+                log.debug('Last command return code: {0}'.format(cmd))
+                if cmd != 0:
+                    return {'comment': 'onlyif execution failed',
+                        'skip_watch': True,
+                        'result': True}
+        elif not isinstance(onlyif, string_types):
+            if not onlyif:
+                log.debug('Command not run: onlyif did not evaluate to string_type')
                 return {'comment': 'onlyif execution failed',
+                        'skip_watch': True,
                         'result': True}
 
     if unless is not None:
-        if not isinstance(unless, string_types):
+        if isinstance(unless, string_types):
+            cmd = __salt__['cmd.retcode'](unless, ignore_retcode=True, python_shell=True, **cmd_kwargs)
+            log.debug('Last command return code: {0}'.format(cmd))
+            if cmd == 0:
+                return {'comment': 'unless execution succeeded',
+                        'skip_watch': True,
+                        'result': True}
+        elif isinstance(unless, list):
+            cmd = []
+            for entry in unless:
+                cmd.append(__salt__['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_kwargs))
+                log.debug('Last command return code: {0}'.format(cmd))
+                if all([c == 0 for c in cmd]):
+                    return {'comment': 'unless execution succeeded',
+                            'skip_watch': True,
+                            'result': True}
+        elif not isinstance(unless, string_types):
             if unless:
+                log.debug('Command not run: unless did not evaluate to string_type')
                 return {'comment': 'unless execution succeeded',
+                        'skip_watch': True,
                         'result': True}
-        elif isinstance(unless, string_types):
-            if __salt__['cmd.retcode'](unless, **cmd_kwargs) == 0:
-                return {'comment': 'unless execution succeeded',
-                        'result': True}
+
+    if isinstance(creates, string_types) and os.path.exists(creates):
+        return {'comment': '{0} exists'.format(creates),
+                'result': True}
+    elif isinstance(creates, list) and all([
+        os.path.exists(path) for path in creates
+    ]):
+        return {'comment': 'All files in creates exist',
+                'result': True}
 
     # No reason to stop, return True
     return True
@@ -291,6 +384,7 @@ def _run_check(cmd_kwargs, onlyif, unless, group):
 def wait(name,
          onlyif=None,
          unless=None,
+         creates=None,
          cwd=None,
          user=None,
          group=None,
@@ -298,6 +392,8 @@ def wait(name,
          env=(),
          stateful=False,
          umask=None,
+         output_loglevel='debug',
+         use_vt=False,
          **kwargs):
     '''
     Run the given command only if the watch statement calls it
@@ -328,8 +424,45 @@ def wait(name,
         The shell to use for execution, defaults to /bin/sh
 
     env
-        Pass in a list or dict of environment variables to be applied to the
-        command upon execution
+        A list of environment variables to be set prior to execution.
+        Example:
+
+        .. code-block:: yaml
+
+            script-foo:
+              cmd.wait:
+                - env:
+                  - BATCH: 'yes'
+
+        .. warning::
+
+            The above illustrates a common PyYAML pitfall, that **yes**,
+            **no**, **on**, **off**, **true**, and **false** are all loaded as
+            boolean ``True`` and ``False`` values, and must be enclosed in
+            quotes to be used as strings. More info on this (and other) PyYAML
+            idiosyncrasies can be found :doc:`here
+            </topics/troubleshooting/yaml_idiosyncrasies>`.
+
+        Variables as values are not evaluated. So $PATH in the following
+        example is a literal '$PATH':
+
+        .. code-block:: yaml
+
+            script-bar:
+              cmd.wait:
+                - env: "PATH=/some/path:$PATH"
+
+        One can still use the existing $PATH by using a bit of Jinja:
+
+        .. code-block:: yaml
+
+            {% set current_path = salt['environ.get']('PATH', '/bin:/usr/bin') %}
+
+            mycommand:
+              cmd.run:
+                - name: ls -l /
+                - env:
+                  - PATH: {{ [current_path, '/my/special/bin']|join(':') }}
 
     umask
          The umask (in octal) to use when running the command.
@@ -337,6 +470,21 @@ def wait(name,
     stateful
         The command being executed is expected to return data about executing
         a state
+
+    creates
+        Only run if the file specified by ``creates`` does not exist.
+
+        .. versionadded:: 2014.7.0
+
+    output_loglevel
+        Control the loglevel at which the output from the command is logged.
+        Note that the command being run will still be logged (loglevel: DEBUG)
+        regardless, unless ``quiet`` is used for this value.
+
+    use_vt
+        Use VT utils (saltstack) to stream the command output more
+        interactively to the console and the logs.
+        This is experimental.
     '''
     # Ignoring our arguments is intentional.
     return {'name': name,
@@ -361,6 +509,8 @@ def wait_script(name,
                 env=None,
                 stateful=False,
                 umask=None,
+                use_vt=False,
+                output_loglevel='debug',
                 **kwargs):
     '''
     Download a script from a remote source and execute it only if a watch
@@ -403,8 +553,45 @@ def wait_script(name,
         The shell to use for execution, defaults to the shell grain
 
     env
-        The root directory of the environment for the referencing script. The
-        environments are defined in the master config file.
+        A list of environment variables to be set prior to execution.
+        Example:
+
+        .. code-block:: yaml
+
+            salt://scripts/foo.sh:
+              cmd.wait_script:
+                - env:
+                  - BATCH: 'yes'
+
+        .. warning::
+
+            The above illustrates a common PyYAML pitfall, that **yes**,
+            **no**, **on**, **off**, **true**, and **false** are all loaded as
+            boolean ``True`` and ``False`` values, and must be enclosed in
+            quotes to be used as strings. More info on this (and other) PyYAML
+            idiosyncrasies can be found :doc:`here
+            </topics/troubleshooting/yaml_idiosyncrasies>`.
+
+        Variables as values are not evaluated. So $PATH in the following
+        example is a literal '$PATH':
+
+        .. code-block:: yaml
+
+            salt://scripts/bar.sh:
+              cmd.wait_script:
+                - env: "PATH=/some/path:$PATH"
+
+        One can still use the existing $PATH by using a bit of Jinja:
+
+        .. code-block:: yaml
+
+            {% set current_path = salt['environ.get']('PATH', '/bin:/usr/bin') %}
+
+            mycommand:
+              cmd.run:
+                - name: ls -l /
+                - env:
+                  - PATH: {{ [current_path, '/my/special/bin']|join(':') }}
 
     umask
          The umask (in octal) to use when running the command.
@@ -412,6 +599,17 @@ def wait_script(name,
     stateful
         The command being executed is expected to return data about executing
         a state
+
+    use_vt
+        Use VT utils (saltstack) to stream the command output more
+        interactively to the console and the logs.
+        This is experimental.
+
+     output_loglevel
+        Control the loglevel at which the output from the command is logged.
+        Note that the command being run will still be logged (loglevel: DEBUG)
+        regardless, unless ``quiet`` is used for this value.
+
     '''
     # Ignoring our arguments is intentional.
     return {'name': name,
@@ -423,16 +621,19 @@ def wait_script(name,
 def run(name,
         onlyif=None,
         unless=None,
+        creates=None,
         cwd=None,
         user=None,
         group=None,
         shell=None,
-        env=(),
+        env=None,
         stateful=False,
         umask=None,
-        output_loglevel='info',
+        output_loglevel='debug',
         quiet=False,
         timeout=None,
+        ignore_timeout=False,
+        use_vt=False,
         **kwargs):
     '''
     Run a command if certain circumstances are met.  Use ``cmd.wait`` if you
@@ -464,8 +665,45 @@ def run(name,
         The shell to use for execution, defaults to the shell grain
 
     env
-        Pass in a list or dict of environment variables to be applied to the
-        command upon execution
+        A list of environment variables to be set prior to execution.
+        Example:
+
+        .. code-block:: yaml
+
+            script-foo:
+              cmd.run:
+                - env:
+                  - BATCH: 'yes'
+
+        .. warning::
+
+            The above illustrates a common PyYAML pitfall, that **yes**,
+            **no**, **on**, **off**, **true**, and **false** are all loaded as
+            boolean ``True`` and ``False`` values, and must be enclosed in
+            quotes to be used as strings. More info on this (and other) PyYAML
+            idiosyncrasies can be found :doc:`here
+            </topics/troubleshooting/yaml_idiosyncrasies>`.
+
+        Variables as values are not evaluated. So $PATH in the following
+        example is a literal '$PATH':
+
+        .. code-block:: yaml
+
+            script-bar:
+              cmd.run:
+                - env: "PATH=/some/path:$PATH"
+
+        One can still use the existing $PATH by using a bit of Jinja:
+
+        .. code-block:: yaml
+
+            {% set current_path = salt['environ.get']('PATH', '/bin:/usr/bin') %}
+
+            mycommand:
+              cmd.run:
+                - name: ls -l /
+                - env:
+                  - PATH: {{ [current_path, '/my/special/bin']|join(':') }}
 
     stateful
         The command being executed is expected to return data about executing
@@ -476,18 +714,34 @@ def run(name,
 
     output_loglevel
         Control the loglevel at which the output from the command is logged.
-        Note that the command being run will still be logged at loglevel INFO
+        Note that the command being run will still be logged (loglevel: DEBUG)
         regardless, unless ``quiet`` is used for this value.
 
     quiet
         The command will be executed quietly, meaning no log entries of the
         actual command or its return data. This is deprecated as of the
-        **2014.1.0 (Hydrogen)** release, and is being replaced with
+        **2014.1.0** release, and is being replaced with
         ``output_loglevel: quiet``.
 
     timeout
         If the command has not terminated after timeout seconds, send the
         subprocess sigterm, and if sigterm is ignored, follow up with sigkill
+
+    ignore_timeout
+        Ignore the timeout of commands, which is useful for running nohup
+        processes.
+
+        .. versionadded:: 2015.8.0
+
+    creates
+        Only run if the file specified by ``creates`` does not exist.
+
+        .. versionadded:: 2014.7.0
+
+    use_vt
+        Use VT utils (saltstack) to stream the command output more
+        interactively to the console and the logs.
+        This is experimental.
 
     .. note::
 
@@ -499,13 +753,14 @@ def run(name,
 
         .. code-block:: yaml
 
-            cmd.run:
-              - name: /usr/bin/python /usr/local/sbin/get-pip.py
-              - unless: which pip
-              - require:
-                - pkg: python
-                - file: /usr/local/sbin/get-pip.py
-              - reload_modules: True
+            getpip:
+              cmd.run:
+                - name: /usr/bin/python /usr/local/sbin/get-pip.py
+                - unless: which pip
+                - require:
+                  - pkg: python
+                  - file: /usr/local/sbin/get-pip.py
+                - reload_modules: True
 
     '''
     ### NOTE: The keyword arguments in **kwargs are ignored in this state, but
@@ -513,62 +768,39 @@ def run(name,
     ###       of unsupported arguments in a cmd.run state will result in a
     ###       traceback.
 
+    test_name = None
+    if not isinstance(stateful, list):
+        stateful = stateful is True
+    elif isinstance(stateful, list) and 'test_name' in stateful[0]:
+        test_name = stateful[0]['test_name']
+    if __opts__['test'] and test_name:
+        name = test_name
+
     ret = {'name': name,
            'changes': {},
            'result': False,
            'comment': ''}
 
     if cwd and not os.path.isdir(cwd):
-        ret['comment'] = 'Desired working directory "{0}" is not available'.format(cwd)
+        ret['comment'] = (
+            'Desired working directory "{0}" '
+            'is not available'
+        ).format(cwd)
         return ret
 
-    if env:
-        if isinstance(env, basestring):
-            try:
-                env = yaml.safe_load(env)
-            except Exception:
-                _env = {}
-                for var in env.split():
-                    try:
-                        key, val = var.split('=')
-                        _env[key] = val
-                    except ValueError:
-                        ret['comment'] = \
-                            'Invalid environmental var: "{0}"'.format(var)
-                        return ret
-                env = _env
-        elif isinstance(env, dict):
-            pass
-
-        elif isinstance(env, list):
-            _env = {}
-            for comp in env:
-                try:
-                    if isinstance(comp, basestring):
-                        _env.update(yaml.safe_load(comp))
-                    if isinstance(comp, dict):
-                        _env.update(comp)
-                    else:
-                        ret['comment'] = \
-                            'Invalid environmental var: "{0}"'.format(env)
-                        return ret
-                except Exception:
-                    _env = {}
-                    for var in comp.split():
-                        try:
-                            key, val = var.split('=')
-                            _env[key] = val
-                        except ValueError:
-                            ret['comment'] = \
-                                'Invalid environmental var: "{0}"'.format(var)
-                            return ret
-            env = _env
+    # Need the check for None here, if env is not provided then it falls back
+    # to None and it is assumed that the environment is not being overridden.
+    if env is not None and not isinstance(env, (list, dict)):
+        ret['comment'] = ('Invalidly-formatted \'env\' parameter. See '
+                          'documentation.')
+        return ret
 
     if HAS_GRP:
         pgid = os.getegid()
 
     cmd_kwargs = {'cwd': cwd,
                   'runas': user,
+                  'use_vt': use_vt,
                   'shell': shell or __grains__['shell'],
                   'env': env,
                   'umask': umask,
@@ -576,28 +808,41 @@ def run(name,
                   'quiet': quiet}
 
     try:
-        cret = _run_check(cmd_kwargs, onlyif, unless, group)
+        cret = mod_run_check(cmd_kwargs, onlyif, unless, group, creates)
         if isinstance(cret, dict):
             ret.update(cret)
             return ret
 
-        # Wow, we passed the test, run this sucker!
-        if not __opts__['test']:
-            try:
-                cmd_all = __salt__['cmd.run_all'](
-                    name, timeout=timeout, **cmd_kwargs
-                )
-            except CommandExecutionError as err:
-                ret['comment'] = str(err)
-                return ret
-
-            ret['changes'] = cmd_all
-            ret['result'] = not bool(cmd_all['retcode'])
-            ret['comment'] = 'Command "{0}" run'.format(name)
+        if __opts__['test'] and not test_name:
+            ret['result'] = None
+            ret['comment'] = 'Command "{0}" would have been executed'.format(name)
             return _reinterpreted_state(ret) if stateful else ret
-        ret['result'] = None
-        ret['comment'] = 'Command "{0}" would have been executed'.format(name)
-        return _reinterpreted_state(ret) if stateful else ret
+
+        # Wow, we passed the test, run this sucker!
+        try:
+            cmd_all = __salt__['cmd.run_all'](
+                name, timeout=timeout, python_shell=True, **cmd_kwargs
+            )
+        except CommandExecutionError as err:
+            ret['comment'] = str(err)
+            return ret
+
+        ret['changes'] = cmd_all
+        ret['result'] = not bool(cmd_all['retcode'])
+        ret['comment'] = 'Command "{0}" run'.format(name)
+
+        # Ignore timeout errors if asked (for nohups) and treat cmd as a success
+        if ignore_timeout:
+            trigger = 'Timed out after'
+            if ret['changes'].get('retcode') == 1 and trigger in ret['changes'].get('stdout'):
+                ret['changes']['retcode'] = 0
+                ret['result'] = True
+
+        if stateful:
+            ret = _reinterpreted_state(ret)
+        if __opts__['test'] and cmd_all['retcode'] == 0 and ret['changes']:
+            ret['result'] = None
+        return ret
 
     finally:
         if HAS_GRP:
@@ -609,6 +854,7 @@ def script(name,
            template=None,
            onlyif=None,
            unless=None,
+           creates=None,
            cwd=None,
            user=None,
            group=None,
@@ -617,50 +863,87 @@ def script(name,
            stateful=False,
            umask=None,
            timeout=None,
+           use_vt=False,
+           output_loglevel='debug',
            **kwargs):
     '''
-    Download a script from a remote source and execute it. The name can be the
-    source or the source value can be defined.
+    Download a script and execute it with specified arguments.
 
     source
-        The source script being downloaded to the minion, this source script is
-        hosted on the salt master server.  If the file is located on the master
-        in the directory named spam, and is called eggs, the source string is
-        salt://spam/eggs
+        The location of the script to download. If the file is located on the
+        master in the directory named spam, and is called eggs, the source
+        string is salt://spam/eggs
 
     template
         If this setting is applied then the named templating engine will be
-        used to render the downloaded file, currently jinja, mako, and wempy
+        used to render the downloaded file. Currently jinja, mako, and wempy
         are supported
 
     name
-        The command to execute, remember that the command will execute with the
-        path and permissions of the salt-minion.
+        Either "cmd arg1 arg2 arg3..." (cmd is not used) or a source
+        "salt://...".
 
     onlyif
-        A command to run as a check, run the named command only if the command
-        passed to the ``onlyif`` option returns true
+        Run the named command only if the command passed to the ``onlyif``
+        option returns true
 
     unless
-        A command to run as a check, only run the named command if the command
-        passed to the ``unless`` option returns false
+        Run the named command only if the command passed to the ``unless``
+        option returns false
 
     cwd
         The current working directory to execute the command in, defaults to
         /root
 
     user
-        The user name to run the command as
+        The name of the user to run the command as
 
     group
         The group context to run the command as
 
     shell
-        The shell to use for execution, defaults to the shell grain
+        The shell to use for execution. The default is set in grains['shell']
 
     env
-        Pass in a list or dict of environment variables to be applied to the
-        command upon execution
+        A list of environment variables to be set prior to execution.
+        Example:
+
+        .. code-block:: yaml
+
+            salt://scripts/foo.sh:
+              cmd.script:
+                - env:
+                  - BATCH: 'yes'
+
+        .. warning::
+
+            The above illustrates a common PyYAML pitfall, that **yes**,
+            **no**, **on**, **off**, **true**, and **false** are all loaded as
+            boolean ``True`` and ``False`` values, and must be enclosed in
+            quotes to be used as strings. More info on this (and other) PyYAML
+            idiosyncrasies can be found :doc:`here
+            </topics/troubleshooting/yaml_idiosyncrasies>`.
+
+        Variables as values are not evaluated. So $PATH in the following
+        example is a literal '$PATH':
+
+        .. code-block:: yaml
+
+            salt://scripts/bar.sh:
+              cmd.script:
+                - env: "PATH=/some/path:$PATH"
+
+        One can still use the existing $PATH by using a bit of Jinja:
+
+        .. code-block:: yaml
+
+            {% set current_path = salt['environ.get']('PATH', '/bin:/usr/bin') %}
+
+            mycommand:
+              cmd.run:
+                - name: ls -l /
+                - env:
+                  - PATH: {{ [current_path, '/my/special/bin']|join(':') }}
 
     umask
          The umask (in octal) to use when running the command.
@@ -675,28 +958,52 @@ def script(name,
 
     args
         String of command line args to pass to the script.  Only used if no
-        args are specified as part of the `name` argument.
+        args are specified as part of the `name` argument. To pass a string
+        containing spaces in YAML, you will need to doubly-quote it:  "arg1
+        'arg two' arg3"
+
+    creates
+        Only run if the file specified by ``creates`` does not exist.
+
+        .. versionadded:: 2014.7.0
+
+    use_vt
+        Use VT utils (saltstack) to stream the command output more
+        interactively to the console and the logs.
+        This is experimental.
+
+    output_loglevel
+        Control the loglevel at which the output from the command is logged.
+        Note that the command being run will still be logged (loglevel: DEBUG)
+        regardless, unless ``quiet`` is used for this value.
+
     '''
-    ret = {'changes': {},
-           'comment': '',
-           'name': name,
-           'result': False}
+    test_name = None
+    if not isinstance(stateful, list):
+        stateful = stateful is True
+    elif isinstance(stateful, list) and 'test_name' in stateful[0]:
+        test_name = stateful[0]['test_name']
+    if __opts__['test'] and test_name:
+        name = test_name
+
+    ret = {'name': name,
+           'changes': {},
+           'result': False,
+           'comment': ''}
 
     if cwd and not os.path.isdir(cwd):
-        ret['comment'] = 'Desired working directory "{0}" is not available'.format(cwd)
+        ret['comment'] = (
+            'Desired working directory "{0}" '
+            'is not available'
+        ).format(cwd)
         return ret
 
-    if isinstance(env, string_types):
-        msg = (
-            'Passing a salt environment should be done using \'saltenv\' not '
-            '\'env\'. This warning will go away in Salt Boron and this '
-            'will be the default and expected behaviour. Please update your '
-            'state files.'
-        )
-        salt.utils.warn_until('Boron', msg)
-        ret.setdefault('warnings', []).append(msg)
-        # No need to set __env__ = env since that's done in function
-        # globals injection machinery
+    # Need the check for None here, if env is not provided then it falls back
+    # to None and it is assumed that the environment is not being overridden.
+    if env is not None and not isinstance(env, (list, dict)):
+        ret['comment'] = ('Invalidly-formatted \'env\' parameter. See '
+                          'documentation.')
+        return ret
 
     if HAS_GRP:
         pgid = os.getegid()
@@ -713,7 +1020,9 @@ def script(name,
                        'template': template,
                        'umask': umask,
                        'timeout': timeout,
-                       '__env__': __env__})
+                       'output_loglevel': output_loglevel,
+                       'use_vt': use_vt,
+                       'saltenv': __env__})
 
     run_check_cmd_kwargs = {
         'cwd': cwd,
@@ -730,22 +1039,22 @@ def script(name,
         cmd_kwargs.update({'args': name.split(' ', 1)[1]})
 
     try:
-        cret = _run_check(
-            run_check_cmd_kwargs, onlyif, unless, group
+        cret = mod_run_check(
+            run_check_cmd_kwargs, onlyif, unless, group, creates
         )
         if isinstance(cret, dict):
             ret.update(cret)
             return ret
 
-        if __opts__['test']:
+        if __opts__['test'] and not test_name:
             ret['result'] = None
-            ret['comment'] = 'Command {0!r} would have been executed'
-            ret['comment'] = ret['comment'].format(name)
+            ret['comment'] = 'Command {0!r} would have been ' \
+                             'executed'.format(name)
             return _reinterpreted_state(ret) if stateful else ret
 
         # Wow, we passed the test, run this sucker!
         try:
-            cmd_all = __salt__['cmd.script'](source, **cmd_kwargs)
+            cmd_all = __salt__['cmd.script'](source, python_shell=True, **cmd_kwargs)
         except (CommandExecutionError, SaltRenderError, IOError) as err:
             ret['comment'] = str(err)
             return ret
@@ -756,11 +1065,15 @@ def script(name,
         else:
             ret['result'] = not bool(cmd_all['retcode'])
         if ret.get('changes', {}).get('cache_error'):
-            ret['comment'] = 'Unable to cache script {0} from env ' \
-                             '{1!r}'.format(source, env)
+            ret['comment'] = 'Unable to cache script {0} from saltenv ' \
+                             '{1!r}'.format(source, __env__)
         else:
             ret['comment'] = 'Command {0!r} run'.format(name)
-        return _reinterpreted_state(ret) if stateful else ret
+        if stateful:
+            ret = _reinterpreted_state(ret)
+        if __opts__['test'] and cmd_all['retcode'] == 0 and ret['changes']:
+            ret['result'] = None
+        return ret
 
     finally:
         if HAS_GRP:
@@ -773,6 +1086,9 @@ def call(name,
          kws=None,
          onlyif=None,
          unless=None,
+         creates=None,
+         output_loglevel='debug',
+         use_vt=False,
          **kwargs):
     '''
     Invoke a pre-defined Python function with arguments specified in the state
@@ -803,7 +1119,7 @@ def call(name,
             'name': name
             'changes': {'retval': result},
             'result': True if result is None else bool(result),
-            'comment': result if isinstance(result, basestring) else ''
+            'comment': result if isinstance(result, string_types) else ''
         }
     '''
     ret = {'name': name,
@@ -815,11 +1131,13 @@ def call(name,
                   'runas': kwargs.get('user'),
                   'shell': kwargs.get('shell') or __grains__['shell'],
                   'env': kwargs.get('env'),
+                  'use_vt': use_vt,
+                  'output_loglevel': output_loglevel,
                   'umask': kwargs.get('umask')}
     if HAS_GRP:
         pgid = os.getegid()
     try:
-        cret = _run_check(cmd_kwargs, onlyif, unless, None)
+        cret = mod_run_check(cmd_kwargs, onlyif, unless, None, creates)
         if isinstance(cret, dict):
             ret.update(cret)
             return ret
@@ -836,7 +1154,7 @@ def call(name,
         # result must be JSON serializable else we get an error
         ret['changes'] = {'retval': result}
         ret['result'] = True if result is None else bool(result)
-        if isinstance(result, basestring):
+        if isinstance(result, string_types):
             ret['comment'] = result
         return ret
 
@@ -847,7 +1165,10 @@ def wait_call(name,
               kws=None,
               onlyif=None,
               unless=None,
+              creates=None,
               stateful=False,
+              use_vt=False,
+              output_loglevel='debug',
               **kwargs):
     # Ignoring our arguments is intentional.
     return {'name': name,
@@ -879,7 +1200,9 @@ def mod_watch(name, **kwargs):
         else:
             return {'name': name,
                     'changes': {},
-                    'comment': 'cmd.{0[sfun]} needs a named parameter func'.format(kwargs),
+                    'comment': (
+                        'cmd.{0[sfun]} needs a named parameter func'
+                    ).format(kwargs),
                     'result': False}
 
     return {'name': name,

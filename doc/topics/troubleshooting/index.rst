@@ -10,18 +10,24 @@ Troubleshooting the Salt Master
 ===============================
 
 If your Salt master is having issues such as minions not returning data, slow
-execution times, or a variety of other issues the 
-:doc:`Salt master troubleshooting page
-</topics/troubleshooting/master>` contains details on troubleshooting the most
-common issues encountered.
+execution times, or a variety of other issues, the following links contain
+details on troubleshooting the most common issues encountered:
+
+.. toctree::
+    :maxdepth: 2
+
+    master
 
 Troubleshooting the Salt Minion
 ===============================
 
-In the event that your Salt minion is having issues a variety of solutions
-and suggestions are available at the :doc:`Salt minion troubleshooting page
-</topics/troubleshooting/minion>`.
+In the event that your Salt minion is having issues, a variety of solutions
+and suggestions are available. Please refer to the following links for more information:
 
+.. toctree::
+    :maxdepth: 2
+
+    minion
 
 Running in the Foreground
 =========================
@@ -209,8 +215,12 @@ needs to be run with the ``python26`` executable.
 Common YAML Gotchas
 ===================
 
-An extensive list of :doc:`YAML idiosyncrasies
-</topics/troubleshooting/yaml_idiosyncrasies>` has been compiled.
+An extensive list of YAML idiosyncrasies has been compiled:
+
+.. toctree::
+    :maxdepth: 2
+
+    yaml_idiosyncrasies
 
 Live Python Debug Output
 ========================
@@ -245,3 +255,11 @@ As of release 0.17.1 you can no longer run different versions of Salt on your
 Master and Minion servers. This is due to a protocol change for security
 purposes. The Salt team will continue to attempt to ensure versions are as
 backwards compatible as possible.
+
+
+Debugging the Master and Minion
+===============================
+
+A list of common :doc:`master</topics/troubleshooting/master>` and
+:doc:`minion</topics/troubleshooting/minion>` troubleshooting steps provide a
+starting point for resolving issues you may encounter.

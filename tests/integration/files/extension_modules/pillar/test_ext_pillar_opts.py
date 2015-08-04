@@ -8,6 +8,7 @@ _virtual__ with the value __opts__
 '''
 
 # Import python libs
+from __future__ import absolute_import
 import logging
 
 # Set up logging
@@ -19,7 +20,7 @@ MY_NAME = 'test_ext_pillar_opts'
 
 def __virtual__():
     log.debug('Loaded external pillar {0} as {1}'.format(__name__, MY_NAME))
-    return MY_NAME
+    return True
 
 
 def ext_pillar(minion_id, pillar, *args):

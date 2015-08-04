@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 '''
-Configuration of the Linux kernel using sysctrl
-===============================================
+Configuration of the Linux kernel using sysctl
+==============================================
 
 Control the kernel sysctl system.
 
@@ -11,16 +11,20 @@ Control the kernel sysctl system.
     sysctl.present:
       - value: 20
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import re
+
+# Import salt libs
+from salt.exceptions import CommandExecutionError
 
 
 def __virtual__():
     '''
     This state is only available on Minions which support sysctl
     '''
-    return 'sysctl' if 'sysctl.show' in __salt__ else False
+    return 'sysctl.show' in __salt__
 
 
 def present(name, value, config=None):
@@ -52,32 +56,73 @@ def present(name, value, config=None):
         else:
             config = '/etc/sysctl.conf'
 
-    current = __salt__['sysctl.show']()
     if __opts__['test']:
-        if name in current:
-            if re.sub(' +|\t+', ' ', current[name]) != re.sub(' +|\t+', ' ', str(value)):
+        current = __salt__['sysctl.show']()
+        configured = __salt__['sysctl.show'](config_file=config)
+        if not configured:
+            ret['result'] = None
+            ret['comment'] = (
+                'Sysctl option {0} might be changed, we failed to check '
+                'config file at {1}. The file is either unreadable, or '
+                'missing.'.format(name, config)
+            )
+            return ret
+        if name in current and name not in configured:
+            if re.sub(' +|\t+', ' ', current[name]) != \
+                    re.sub(' +|\t+', ' ', str(value)):
                 ret['result'] = None
                 ret['comment'] = (
-                        'Sysctl option {0} set to be changed to {1}'
-                        ).format(name, value)
+                    'Sysctl option {0} set to be changed to {1}'
+                    .format(name, value)
+                )
                 return ret
             else:
-                ret['comment'] = 'Sysctl value {0} = {1} is already set'.format(name, value)
+                ret['result'] = None
+                ret['comment'] = (
+                    'Sysctl value is currently set on the running system but '
+                    'not in a config file. Sysctl option {0} set to be '
+                    'changed to {1} in config file.'.format(name, value)
+                )
                 return ret
-        else:
-            ret['result'] = False
-            ret['comment'] = 'Invalid sysctl option {0} = {1}'.format(name, value)
+        elif name in configured and name not in current:
+            ret['result'] = None
+            ret['comment'] = (
+                'Sysctl value {0} is present in configuration file but is not '
+                'present in the running config. The value {0} is set to be '
+                'changed to {1}'.format(name, value)
+            )
             return ret
+        elif name in configured and name in current:
+            if str(value).split() == __salt__['sysctl.get'](name).split():
+                ret['result'] = True
+                ret['comment'] = (
+                    'Sysctl value {0} = {1} is already set'
+                    .format(name, value)
+                )
+                return ret
+        # otherwise, we don't have it set anywhere and need to set it
+        ret['result'] = None
+        ret['comment'] = (
+            'Sysctl option {0} would be changed to {1}'.format(name, value)
+        )
+        return ret
 
-    update = __salt__['sysctl.persist'](name, value, config)
+    try:
+        update = __salt__['sysctl.persist'](name, value, config)
+    except CommandExecutionError as exc:
+        ret['result'] = False
+        ret['comment'] = (
+            'Failed to set {0} to {1}: {2}'.format(name, value, exc)
+        )
+        return ret
 
     if update == 'Updated':
         ret['changes'] = {name: value}
         ret['comment'] = 'Updated sysctl value {0} = {1}'.format(name, value)
     elif update == 'Already set':
-        ret['comment'] = 'Sysctl value {0} = {1} is already set'.format(
-                name,
-                value
-                )
+        ret['comment'] = (
+            'Sysctl value {0} = {1} is already set'
+            .format(name, value)
+        )
 
     return ret

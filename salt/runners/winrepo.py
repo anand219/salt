@@ -4,21 +4,23 @@ Runner to manage Windows software repo
 '''
 
 # Import python libs
+from __future__ import absolute_import, print_function
 import os
 
 # Import third party libs
-import yaml
+import salt.ext.six as six
 try:
     import msgpack
 except ImportError:
-    import msgpack_pure as msgpack
+    import msgpack_pure as msgpack  # pylint: disable=import-error
 
 # Import salt libs
-import salt.output
+from salt.exceptions import SaltRenderError
 import salt.utils
 import logging
 import salt.minion
-from salt._compat import string_types
+import salt.loader
+import salt.template
 
 log = logging.getLogger(__name__)
 
@@ -38,37 +40,36 @@ def genrepo():
     if not os.path.exists(repo):
         os.makedirs(repo)
     winrepo = __opts__['win_repo_mastercachefile']
-    for root, dirs, files in os.walk(repo):
+    renderers = salt.loader.render(__opts__, __salt__)
+    for root, _, files in os.walk(repo):
         for name in files:
             if name.endswith('.sls'):
-                with salt.utils.fopen(os.path.join(root, name), 'r') as slsfile:
-                    try:
-                        config = yaml.safe_load(slsfile.read()) or {}
-                    except yaml.parser.ParserError as exc:
-                        # log.debug doesn't seem to be working
-                        # delete the following print statement
-                        # when log.debug works
-                        log.debug('Failed to compile'
-                                  '{0}: {1}'.format(os.path.join(root, name), exc))
-                        print 'Failed to compile {0}: {1}'.format(os.path.join(root, name), exc)
+                try:
+                    config = salt.template.compile_template(
+                            os.path.join(root, name),
+                            renderers,
+                            __opts__['renderer'])
+                except SaltRenderError as exc:
+                    log.debug('Failed to render {0}.'.format(os.path.join(root, name)))
+                    log.debug('Error: {0}.'.format(exc))
+                    continue
                 if config:
                     revmap = {}
-                    for pkgname, versions in config.iteritems():
-                        for version, repodata in versions.iteritems():
-                            if not isinstance(version, string_types):
+                    for pkgname, versions in six.iteritems(config):
+                        for version, repodata in six.iteritems(versions):
+                            if not isinstance(version, six.string_types):
                                 config[pkgname][str(version)] = \
                                     config[pkgname].pop(version)
                             if not isinstance(repodata, dict):
                                 log.debug('Failed to compile'
                                           '{0}.'.format(os.path.join(root, name)))
-                                print 'Failed to compile {0}.'.format(os.path.join(root, name))
+                                __jid_event__.fire_event({'error': 'Failed to compile {0}.'.format(os.path.join(root, name))}, 'progress')
                                 continue
                             revmap[repodata['full_name']] = pkgname
                     ret.setdefault('repo', {}).update(config)
                     ret.setdefault('name_map', {}).update(revmap)
-    with salt.utils.fopen(os.path.join(repo, winrepo), 'w') as repo:
+    with salt.utils.fopen(os.path.join(repo, winrepo), 'w+b') as repo:
         repo.write(msgpack.dumps(ret))
-    salt.output.display_output(ret, 'pprint', __opts__)
     return ret
 
 
@@ -91,10 +92,14 @@ def update_git_repos():
             targetname = gitrepo.split('/')[-1]
         else:
             targetname = gitrepo
+        rev = None
+        # If a revision is specified, use it.
+        if len(gitrepo.strip().split(' ')) > 1:
+            rev, gitrepo = gitrepo.strip().split(' ')
         gittarget = os.path.join(repo, targetname)
         result = mminion.states['git.latest'](gitrepo,
+                                              rev=rev,
                                               target=gittarget,
                                               force=True)
         ret[result['name']] = result['result']
-    salt.output.display_output(ret, 'pprint', __opts__)
     return ret

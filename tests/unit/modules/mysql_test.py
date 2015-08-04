@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 '''
     :codeauthor: :email:`Mike Place (mp@saltstack.com)`
-    :copyright: © 2013 by the SaltStack Team, see AUTHORS for more details
-    :license: Apache 2.0, see LICENSE for more details.
 
 
     tests.unit.modules.mysql
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 '''
+
+# Import Python libs
+from __future__ import absolute_import
 
 # Import Salt Testing libs
 from salttesting import skipIf, TestCase
@@ -21,7 +22,7 @@ from salt.modules import mysql
 
 NO_MYSQL = False
 try:
-    import MySQLdb
+    import MySQLdb  # pylint: disable=W0611
 except Exception:
     NO_MYSQL = True
 
@@ -197,12 +198,44 @@ class MySQLTestCase(TestCase):
                        'testuser'
         )
 
-    @skipIf(True, 'TODO: Mock up user_grants()')
-    def test_grant_exists(self):
+    def test_grant_exists_true(self):
         '''
-        Test to ensure a basic query for grants works in the mysql exec module
+        Test to ensure that we can find a grant that exists
         '''
-        self._test_call(mysql.grant_exists, '', 'SELECT,INSERT,UPDATE', 'database.*', 'frank')
+        mock_grants = [
+            "GRANT USAGE ON *.* TO 'testuser'@'%'",
+            "GRANT SELECT, INSERT, UPDATE ON `testdb`.`testtableone` TO 'testuser'@'%'",
+            "GRANT SELECT ON `testdb`.`testtabletwo` TO 'testuer'@'%'",
+            "GRANT SELECT ON `testdb`.`testtablethree` TO 'testuser'@'%'",
+        ]
+        mock = MagicMock(return_value=mock_grants)
+        with patch.object(mysql, 'user_grants', return_value=mock_grants) as mock_user_grants:
+            ret = mysql.grant_exists(
+                'SELECT, INSERT, UPDATE',
+                'testdb.testtableone',
+                'testuser',
+                '%'
+            )
+            self.assertEqual(ret, True)
+
+    def test_grant_exists_false(self):
+        '''
+        Test to ensure that we don't find a grant that doesn't exist
+        '''
+        mock_grants = [
+            "GRANT USAGE ON *.* TO 'testuser'@'%'",
+            "GRANT SELECT, INSERT, UPDATE ON `testdb`.`testtableone` TO 'testuser'@'%'",
+            "GRANT SELECT ON `testdb`.`testtablethree` TO 'testuser'@'%'",
+        ]
+        mock = MagicMock(return_value=mock_grants)
+        with patch.object(mysql, 'user_grants', return_value=mock_grants) as mock_user_grants:
+            ret = mysql.grant_exists(
+                'SELECT',
+                'testdb.testtabletwo',
+                'testuser',
+                '%'
+            )
+            self.assertEqual(ret, False)
 
     @skipIf(True, 'TODO: Mock up user_grants()')
     def test_grant_add(self):
@@ -238,7 +271,7 @@ class MySQLTestCase(TestCase):
 
     @skipIf(True, 'MySQL module claims this function is not ready for production')
     def test_free_slave(self):
-        self.assertTrue(False)
+        pass
 
     def test_query(self):
         self._test_call(mysql.query, 'SELECT * FROM testdb', 'testdb', 'SELECT * FROM testdb')
@@ -253,3 +286,8 @@ class MySQLTestCase(TestCase):
             else:
                 calls = (call().cursor().execute('{0}'.format(expected_sql)))
             connect_mock.assert_has_calls(calls)
+
+
+if __name__ == '__main__':
+    from integration import run_tests
+    run_tests(MySQLTestCase, needs_daemon=False)

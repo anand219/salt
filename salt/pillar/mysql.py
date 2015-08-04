@@ -2,35 +2,65 @@
 '''
 Retrieve Pillar data by doing a MySQL query
 
+MariaDB provides Python support through the MySQL Python package.
+Therefore, you may use this module with both MySQL or MariaDB.
+
+This module is a concrete implementation of the sql_base ext_pillar for MySQL.
+
 :maturity: new
 :depends: python-mysqldb
 :platform: all
 
+Legacy compatibility
+=====================================
+
+This module has an extra addition for backward compatibility.
+
+If there's a keyword arg of mysql_query, that'll go first before other args.
+This legacy compatibility translates to depth 1.
+
+We do this so that it's backward compatible with older configs.
+This is deprecated and slated to be removed in Boron.
+
 Configuring the mysql ext_pillar
 =====================================
-.. code-block:: yaml
 
-  ext_pillar:
-    - mysql:
-        mysql_query: "SELECT pillar,value FROM pillars WHERE minion_id = %s"
-
-You can basically use any SELECT query here that gets you the information, you
-could even do joins or subqueries in case your minion_id is stored elsewhere.
-The query should always return two pieces of information in the correct order(
-key, value). It is capable of handling single rows or multiple rows per minion.
+Use the 'mysql' key under ext_pillar for configuration of queries.
 
 MySQL configuration of the MySQL returner is being used (mysql.db, mysql.user,
-mysql.pass, mysql.port, mysql.host)
+mysql.pass, mysql.port, mysql.host) for database connection info.
 
 Required python modules: MySQLdb
-'''
 
-# Don't "fix" the above docstring to put it on two lines, as the sphinx
-# autosummary pulls only the first line for its description.
+Complete example
+=====================================
+
+.. code-block:: yaml
+
+    mysql:
+      user: 'salt'
+      pass: 'super_secret_password'
+      db: 'salt_db'
+
+    ext_pillar:
+      - mysql:
+          fromdb:
+            query: 'SELECT col1,col2,col3,col4,col5,col6,col7
+                      FROM some_random_table
+                     WHERE minion_pattern LIKE %s'
+            depth: 5
+            as_list: True
+            with_lists: [1,3]
+'''
+from __future__ import absolute_import
 
 # Import python libs
 from contextlib import contextmanager
 import logging
+
+# Import Salt libs
+import salt.utils
+from salt.pillar.sql_base import SqlBaseExtPillar
 
 # Set up logging
 log = logging.getLogger(__name__)
@@ -46,71 +76,77 @@ except ImportError:
 def __virtual__():
     if not HAS_MYSQL:
         return False
-    return 'mysql'
+    return True
 
 
-def _get_options():
+class MySQLExtPillar(SqlBaseExtPillar):
     '''
-    Returns options used for the MySQL connection.
+    This class receives and processes the database rows from MySQL.
     '''
-    defaults = {'host': 'localhost',
-                'user': 'salt',
-                'pass': 'salt',
-                'db': 'salt',
-                'port': 3306}
-    _options = {}
-    for attr in defaults:
-        _attr = __salt__['config.option']('mysql.{0}'.format(attr))
-        if not _attr:
-            log.debug('Using default for MySQL {0}'.format(attr))
-            _options[attr] = defaults[attr]
-            continue
-        _options[attr] = _attr
+    @classmethod
+    def _db_name(cls):
+        return 'MySQL'
 
-    return _options
+    def _get_options(self):
+        '''
+        Returns options used for the MySQL connection.
+        '''
+        defaults = {'host': 'localhost',
+                    'user': 'salt',
+                    'pass': 'salt',
+                    'db': 'salt',
+                    'port': 3306}
+        _options = {}
+        _opts = __opts__.get('mysql', {})
+        for attr in defaults:
+            if attr not in _opts:
+                log.debug('Using default for MySQL {0}'.format(attr))
+                _options[attr] = defaults[attr]
+                continue
+            _options[attr] = _opts[attr]
+        return _options
+
+    @contextmanager
+    def _get_cursor(self):
+        '''
+        Yield a MySQL cursor
+        '''
+        _options = self._get_options()
+        conn = MySQLdb.connect(host=_options['host'],
+                               user=_options['user'],
+                               passwd=_options['pass'],
+                               db=_options['db'], port=_options['port'])
+        cursor = conn.cursor()
+        try:
+            yield cursor
+        except MySQLdb.DatabaseError as err:
+            log.exception('Error in ext_pillar MySQL: {0}'.format(err.args))
+        finally:
+            conn.close()
+
+    def extract_queries(self, args, kwargs):
+        '''
+            This function normalizes the config block into a set of queries we
+            can use.  The return is a list of consistently laid out dicts.
+        '''
+        # Handle legacy query specification
+        if 'mysql_query' in kwargs:
+            salt.utils.warn_until(
+                'Boron',
+                'The legacy mysql_query configuration parameter is deprecated.'
+                'See the docs for the new styel of configuration.'
+                'This functionality will be removed in Salt Boron.'
+            )
+            args.insert(0, kwargs.pop('mysql_query'))
+
+        return super(MySQLExtPillar, self).extract_queries(args, kwargs)
 
 
-@contextmanager
-def _get_serv():
+def ext_pillar(minion_id,
+               pillar,
+               *args,
+               **kwargs):
     '''
-    Return a mysql cursor
+    Execute queries against MySQL, merge and return as a dict
     '''
-    _options = _get_options()
-    conn = MySQLdb.connect(host=_options['host'],
-                           user=_options['user'],
-                           passwd=_options['pass'],
-                           db=_options['db'], port=_options['port'])
-    cursor = conn.cursor()
-    try:
-        yield cursor
-    except MySQLdb.DatabaseError as err:
-        log.exception('Error in ext_pillar MySQL: {0}'.format(err.args))
-    finally:
-        conn.close()
-
-
-def ext_pillar(minion_id, pillar, mysql_query, *args, **kwargs):
-    '''
-    Execute the query and return its data as a set
-    '''
-    log.info('Querying MySQL for information for {0}'.format(minion_id, ))
-#
-# this is pretty much WIP still, not sure whether this is a parameter that is being filled in at some point.
-#    log.debug('ext_pillar MySQL args: {0}'.format(args))
-#    log.debug('ext_pillar MySQL kwargs: {0}'.format(kwargs))
-#
-#    if len(pillar) == 1:
-#        log.debug('Pillar set, updating query to include it.')
-#        mysql_query += ' AND pillar={0}'.format(pillar)
-#        # @todo handle multiple pillars in case its requested, instead of returning everything we have for the minion
-#
-
-    with _get_serv() as cur:
-        cur.execute(mysql_query, (minion_id,))
-
-        return_data = {}
-        for ret in cur.fetchall():
-            return_data[ret[0]] = ret[1]
-
-        log.debug('ext_pillar MySQL: Return data: {0}'.format(return_data))
-        return return_data
+    return MySQLExtPillar().fetch(minion_id, pillar, *args, **kwargs)

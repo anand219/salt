@@ -24,9 +24,9 @@ parameters used by Salt to define the various timing values for a cron job:
     the cron job is for another user, it is necessary to specify that user with
     the ``user`` parameter.
 
-When making changes to an existing cron job, the name declaration is the
-parameter used to uniquely identify the job, so if an existing cron that looks
-like this:
+A long time ago (before 2014.2), when making changes to an existing cron job,
+the name declaration is the parameter used to uniquely identify the job,
+so if an existing cron that looks like this:
 
 .. code-block:: yaml
 
@@ -48,7 +48,37 @@ Is changed to this:
 Then the existing cron will be updated, but if the cron command is changed,
 then a new cron job will be added to the user's crontab.
 
-Salt also supports running a cron every ``x minutes`` very similarily to the Unix
+The current behavior is still relying on that mechanism, but you can also
+specify an identifier to identify your crontabs:
+
+.. code-block:: yaml
+
+    date > /tmp/crontest:
+      cron.present:
+        - identifier: SUPERCRON
+        - user: root
+        - minute: 7
+        - hour: 2
+
+.. versionadded:: 2014.1.2
+
+And, some months later, you modify it:
+
+.. code-block:: yaml
+
+    superscript > /tmp/crontest:
+      cron.present:
+        - identifier: SUPERCRON
+        - user: root
+        - minute: 3
+        - hour: 4
+
+.. versionadded:: 2014.1.2
+
+The old **date > /tmp/crontest** will be replaced by
+**superscript > /tmp/crontest**.
+
+Additionally, Salt also supports running a cron every ``x minutes`` very similarly to the Unix
 convention of using ``*/5`` to have a job run every five minutes. In Salt, this
 looks like:
 
@@ -85,14 +115,19 @@ from ``*`` to a randomized numeric value. However, if that field in the cron
 entry on the minion already contains a numeric value, then using the ``random``
 keyword will not modify it.
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import os
+from salt.ext.six import string_types
 
 # Import salt libs
-import salt._compat
 import salt.utils
-from salt.modules.cron import _needs_change
+from salt.modules.cron import (
+    _needs_change,
+    _cron_matched,
+    SALT_CRON_NO_IDENTIFIER
+)
 
 
 def _check_cron(user,
@@ -102,7 +137,8 @@ def _check_cron(user,
                 daymonth=None,
                 month=None,
                 dayweek=None,
-                comment=None):
+                comment=None,
+                identifier=None):
     '''
     Return the changes
     '''
@@ -116,13 +152,18 @@ def _check_cron(user,
         month = str(month).lower()
     if dayweek is not None:
         dayweek = str(dayweek).lower()
+    if identifier is not None:
+        identifier = str(identifier)
+    if cmd is not None:
+        cmd = str(cmd)
     lst = __salt__['cron.list_tab'](user)
     for cron in lst['crons']:
-        if cmd == cron['cmd']:
+        if _cron_matched(cron, cmd, identifier):
             if any([_needs_change(x, y) for x, y in
                     ((cron['minute'], minute), (cron['hour'], hour),
                      (cron['daymonth'], daymonth), (cron['month'], month),
-                     (cron['dayweek'], dayweek), (cron['comment'], comment))]):
+                     (cron['dayweek'], dayweek), (cron['identifier'], identifier),
+                     (cron['cmd'], cmd), (cron['comment'], comment))]):
                 return 'update'
             return 'present'
     return 'absent'
@@ -156,7 +197,7 @@ def _get_cron_info():
     elif __grains__['os'] == 'OpenBSD':
         group = 'crontab'
         crontab_dir = '/var/cron/tabs'
-    elif __grains__['os'] == 'Solaris':
+    elif __grains__['os_family'] == 'Solaris':
         group = 'root'
         crontab_dir = '/var/spool/cron/crontabs'
     elif __grains__['os'] == 'MacOS':
@@ -175,7 +216,8 @@ def present(name,
             daymonth='*',
             month='*',
             dayweek='*',
-            comment=None):
+            comment=None,
+            identifier=None):
     '''
     Verifies that the specified cron job is present for the specified user.
     For more advanced information about what exactly can be set in the cron
@@ -209,21 +251,28 @@ def present(name,
 
     comment
         User comment to be added on line previous the cron job
+
+    identifier
+        Custom-defined identifier for tracking the cron line for future crontab
+        edits. This defaults to the state id
     '''
     name = ' '.join(name.strip().split())
+    if not identifier:
+        identifier = SALT_CRON_NO_IDENTIFIER
     ret = {'changes': {},
            'comment': '',
            'name': name,
            'result': True}
     if __opts__['test']:
         status = _check_cron(user,
-                             name,
-                             minute,
-                             hour,
-                             daymonth,
-                             month,
-                             dayweek,
-                             comment)
+                             cmd=name,
+                             minute=minute,
+                             hour=hour,
+                             daymonth=daymonth,
+                             month=month,
+                             dayweek=dayweek,
+                             comment=comment,
+                             identifier=identifier)
         ret['result'] = None
         if status == 'absent':
             ret['comment'] = 'Cron {0} is set to be added'.format(name)
@@ -241,7 +290,8 @@ def present(name,
                                     month=month,
                                     dayweek=dayweek,
                                     cmd=name,
-                                    comment=comment)
+                                    comment=comment,
+                                    identifier=identifier)
     if data == 'present':
         ret['comment'] = 'Cron {0} already present'.format(name)
         return ret
@@ -252,7 +302,7 @@ def present(name,
         return ret
 
     if data == 'updated':
-        ret['comment'] = 'Cron {0} updated'.format(name, user)
+        ret['comment'] = 'Cron {0} updated'.format(name)
         ret['changes'] = {user: name}
         return ret
     ret['comment'] = ('Cron {0} for user {1} failed to commit with error \n{2}'
@@ -263,6 +313,7 @@ def present(name,
 
 def absent(name,
            user='root',
+           identifier=None,
            **kwargs):
     '''
     Verifies that the specified cron job is absent for the specified user; only
@@ -274,12 +325,18 @@ def absent(name,
     user
         The name of the user whose crontab needs to be modified, defaults to
         the root user
+
+    identifier
+        Custom-defined identifier for tracking the cron line for future crontab
+        edits. This defaults to the state id
     '''
     ### NOTE: The keyword arguments in **kwargs are ignored in this state, but
     ###       cannot be removed from the function definition, otherwise the use
     ###       of unsupported arguments will result in a traceback.
 
     name = ' '.join(name.strip().split())
+    if not identifier:
+        identifier = SALT_CRON_NO_IDENTIFIER
     ret = {'name': name,
            'result': True,
            'changes': {},
@@ -295,7 +352,7 @@ def absent(name,
             ret['comment'] = 'Cron {0} is set to be removed'.format(name)
         return ret
 
-    data = __salt__['cron.rm_job'](user, name)
+    data = __salt__['cron.rm_job'](user, name, identifier=identifier)
     if data == 'absent':
         ret['comment'] = "Cron {0} already absent".format(name)
         return ret
@@ -329,7 +386,7 @@ def file(name,
         hosted on either the salt master server, or on an HTTP or FTP server.
         For files hosted on the salt file server, if the file is located on
         the master in the directory named spam, and is called eggs, the source
-        string is salt://spam/eggs.
+        string is ``salt://spam/eggs``
 
         If the file is hosted on a HTTP or FTP server then the source_hash
         argument is also required
@@ -338,7 +395,7 @@ def file(name,
         This can be either a file which contains a source hash string for
         the source, or a source hash string. The source hash string is the
         hash algorithm followed by the hash of the file:
-        md5=e138491e9d5b97023cea823fe17bac22
+        ``md5=e138491e9d5b97023cea823fe17bac22``
 
     user
         The user to whom the crontab should be assigned. This defaults to
@@ -363,12 +420,15 @@ def file(name,
         Overrides the default backup mode for the user's crontab.
     '''
     # Initial set up
-    mode = __salt__['config.manage_mode'](600)
+    mode = __salt__['config.manage_mode']('0600')
     owner, group, crontab_dir = _get_cron_info()
 
     cron_path = salt.utils.mkstemp()
     with salt.utils.fopen(cron_path, 'w+') as fp_:
-        fp_.write(__salt__['cron.raw_cron'](user))
+        raw_cron = __salt__['cron.raw_cron'](user)
+        if not raw_cron.endswith('\n'):
+            raw_cron = "{0}\n".format(raw_cron)
+        fp_.write(raw_cron)
 
     ret = {'changes': {},
            'comment': '',
@@ -379,11 +439,11 @@ def file(name,
     # declaration for this state will be a source URI.
     source = name
 
-    if isinstance(env, salt._compat.string_types):
+    if isinstance(env, string_types):
         msg = (
             'Passing a salt environment should be done using \'saltenv\' not '
             '\'env\'. This warning will go away in Salt Boron and this '
-            'will be the default and expected behaviour. Please update your '
+            'will be the default and expected behavior. Please update your '
             'state files.'
         )
         salt.utils.warn_until('Boron', msg)
@@ -404,7 +464,6 @@ def file(name,
                                              group,
                                              mode,
                                              template,
-                                             False,  # makedirs = False
                                              context,
                                              defaults,
                                              __env__,
@@ -417,7 +476,7 @@ def file(name,
     # If the source is a list then find which file exists
     source, source_hash = __salt__['file.source_list'](source,
                                                        source_hash,
-                                                       env)
+                                                       __env__)
 
     # Gather the source file from the server
     try:
@@ -429,7 +488,7 @@ def file(name,
             owner,
             group,
             mode,
-            env,
+            __env__,
             context,
             defaults,
             **kwargs
@@ -456,7 +515,7 @@ def file(name,
             owner,
             group,
             mode,
-            env,
+            __env__,
             backup
         )
     except Exception as exc:
@@ -526,7 +585,7 @@ def env_present(name,
         return ret
 
     if data == 'updated':
-        ret['comment'] = 'Cron env {0} updated'.format(name, user)
+        ret['comment'] = 'Cron env {0} updated'.format(name)
         ret['changes'] = {user: name}
         return ret
     ret['comment'] = ('Cron env {0} for user {1} failed to commit with error \n{2}'

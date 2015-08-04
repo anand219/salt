@@ -2,8 +2,6 @@
 # -*- coding: utf-8 -*-
 '''
     :codeauthor: :email:`Pedro Algarvio (pedro@algarvio.me)`
-    :copyright: © 2013 by the SaltStack Team, see AUTHORS for more details.
-    :license: Apache 2.0, see LICENSE for more details.
 
 
     setup-transifex-config
@@ -19,7 +17,12 @@ import getpass
 import ConfigParser
 
 HOST = 'https://www.transifex.com'
-RCFILE = os.path.abspath(os.path.expanduser('~/.transifexrc'))
+RCFILE = os.path.abspath(
+    os.environ.get(
+        'TRANSIFEX_RC',
+        os.path.expanduser('~/.transifexrc')
+    )
+)
 
 
 def main():
@@ -33,6 +36,9 @@ def main():
     )
     if not os.path.exists(RCFILE):
         while True:
+            username = os.environ.get('TRANSIFEX_USER', None)
+            if username is not None:
+                break
             try:
                 username = raw_input(
                     'What is your username on Transifex.com? '
@@ -43,6 +49,9 @@ def main():
                 print
                 sys.exit(1)
         while True:
+            password = os.environ.get('TRANSIFEX_PASS', None)
+            if password is not None:
+                break
             try:
                 password = getpass.getpass(
                     'What is your password on Transifex.com? '

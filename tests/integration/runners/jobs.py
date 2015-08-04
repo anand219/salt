@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-
 '''
 Tests for the salt-run command
 '''
-# Import python libs
-import sys
+# Import Python libs
+from __future__ import absolute_import
 
 # Import Salt Testing libs
+from salttesting import skipIf
 from salttesting.helpers import ensure_in_syspath
 ensure_in_syspath('../../')
 
@@ -24,7 +24,7 @@ class ManageTest(integration.ShellCase):
         '''
         ret = self.run_run_plus('jobs.active')
         self.assertEqual(ret['fun'], {})
-        self.assertEqual(ret['out'], ['{}'])
+        self.assertEqual(ret['out'], [])
 
     def test_lookup_jid(self):
         '''
@@ -34,6 +34,7 @@ class ManageTest(integration.ShellCase):
         self.assertEqual(ret['fun'], {})
         self.assertEqual(ret['out'], [])
 
+    @skipIf(True, 'to be reenabled when #23623 is merged')
     def test_list_jobs(self):
         '''
         jobs.list_jobs

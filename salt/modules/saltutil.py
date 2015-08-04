@@ -1,38 +1,85 @@
 # -*- coding: utf-8 -*-
 '''
-The Saltutil module is used to manage the state of the salt minion itself. It is used to manage minion modules as well as automate updates to the salt minion.
+The Saltutil module is used to manage the state of the salt minion itself. It
+is used to manage minion modules as well as automate updates to the salt
+minion.
 
 :depends:   - esky Python module for update functionality
 '''
+from __future__ import absolute_import
 
 # Import python libs
 import os
-import hashlib
 import shutil
 import signal
 import logging
 import fnmatch
-import time
 import sys
+import copy
 
-# Import salt libs
-import salt.payload
-import salt.state
-import salt.client
-import salt.utils
-import salt.utils.process
-import salt.transport
-from salt.exceptions import SaltReqTimeoutError
-from salt._compat import string_types
-
-# Import third party libs
+# Import 3rd-party libs
+# pylint: disable=import-error
 try:
     import esky
+    from esky import EskyVersionError
     HAS_ESKY = True
 except ImportError:
     HAS_ESKY = False
+# pylint: disable=no-name-in-module
+from salt.ext.six import string_types
+from salt.ext.six.moves.urllib.error import URLError
+# pylint: enable=import-error,no-name-in-module
+
+# Fix a nasty bug with Win32 Python not supporting all of the standard signals
+try:
+    salt_SIGKILL = signal.SIGKILL
+except AttributeError:
+    salt_SIGKILL = signal.SIGTERM
+
+# Import salt libs
+import salt
+import salt.payload
+import salt.state
+import salt.client
+import salt.client.ssh.client
+import salt.config
+import salt.runner
+import salt.utils
+import salt.utils.process
+import salt.utils.minion
+import salt.utils.event
+import salt.utils.url
+import salt.transport
+import salt.wheel
+from salt.exceptions import (
+    SaltReqTimeoutError, SaltRenderError, CommandExecutionError
+)
+
+__proxyenabled__ = ['*']
 
 log = logging.getLogger(__name__)
+
+
+def _get_top_file_envs():
+    '''
+    Get all environments from the top file
+    '''
+    try:
+        return __context__['saltutil._top_file_envs']
+    except KeyError:
+        try:
+            st_ = salt.state.HighState(__opts__)
+            top = st_.get_top()
+            if top:
+                envs = list(st_.top_matches(top).keys()) or 'base'
+            else:
+                envs = 'base'
+        except SaltRenderError as exc:
+            raise CommandExecutionError(
+                'Unable to render top file(s): {0}'.format(exc)
+            )
+        __context__['saltutil._top_file_envs'] = envs
+        return envs
 
 
 def _sync(form, saltenv=None):
@@ -40,28 +87,30 @@ def _sync(form, saltenv=None):
     Sync the given directory in the given environment
     '''
     if saltenv is None:
-        # No environment passed, detect them based on gathering the top files
-        # from the master
-        st_ = salt.state.HighState(__opts__)
-        top = st_.get_top()
-        if top:
-            saltenv = st_.top_matches(top).keys()
-        if not saltenv:
-            saltenv = 'base'
+        saltenv = _get_top_file_envs()
     if isinstance(saltenv, string_types):
         saltenv = saltenv.split(',')
     ret = []
     remote = set()
-    source = os.path.join('salt://_{0}'.format(form))
+    source = salt.utils.url.create('_' + form)
     mod_dir = os.path.join(__opts__['extension_modules'], '{0}'.format(form))
     if not os.path.isdir(mod_dir):
         log.info('Creating module dir {0!r}'.format(mod_dir))
-        os.makedirs(mod_dir)
+        try:
+            os.makedirs(mod_dir)
+        except (IOError, OSError):
+            msg = 'Cannot create cache module directory {0}. Check permissions.'
+            log.error(msg.format(mod_dir))
     for sub_env in saltenv:
         log.info('Syncing {0} for environment {1!r}'.format(form, sub_env))
         cache = []
         log.info('Loading cache from {0}, for {1})'.format(source, sub_env))
-        cache.extend(__salt__['cp.cache_dir'](source, sub_env))
+        # Grab only the desired files (.py, .pyx, .so)
+        cache.extend(
+            __salt__['cp.cache_dir'](
+                source, sub_env, include_pat=r'E@\.(pyx?|so)$'
+            )
+        )
         local_cache_dir = os.path.join(
                 __opts__['cachedir'],
                 'files',
@@ -70,31 +119,17 @@ def _sync(form, saltenv=None):
                 )
         log.debug('Local cache dir: {0!r}'.format(local_cache_dir))
         for fn_ in cache:
-            if __opts__.get('file_client', '') == 'local':
-                for fn_root in __opts__['file_roots'].get(sub_env, []):
-                    if fn_.startswith(fn_root):
-                        relpath = os.path.relpath(fn_, fn_root)
-                        relpath = relpath[relpath.index('/') + 1:]
-                        relname = os.path.splitext(relpath)[0].replace(
-                                os.sep,
-                                '.')
-                        remote.add(relpath)
-                        dest = os.path.join(mod_dir, relpath)
-            else:
-                relpath = os.path.relpath(fn_, local_cache_dir)
-                relname = os.path.splitext(relpath)[0].replace(os.sep, '.')
-                remote.add(relpath)
-                dest = os.path.join(mod_dir, relpath)
+            relpath = os.path.relpath(fn_, local_cache_dir)
+            relname = os.path.splitext(relpath)[0].replace(os.sep, '.')
+            remote.add(relpath)
+            dest = os.path.join(mod_dir, relpath)
             log.info('Copying {0!r} to {1!r}'.format(fn_, dest))
             if os.path.isfile(dest):
                 # The file is present, if the sum differs replace it
-                srch = hashlib.md5(
-                    salt.utils.fopen(fn_, 'r').read()
-                ).hexdigest()
-                dsth = hashlib.md5(
-                    salt.utils.fopen(dest, 'r').read()
-                ).hexdigest()
-                if srch != dsth:
+                hash_type = __opts__.get('hash_type', 'md5')
+                src_digest = salt.utils.get_hash(fn_, hash_type)
+                dst_digest = salt.utils.get_hash(dest, hash_type)
+                if src_digest != dst_digest:
                     # The downloaded file differs, replace!
                     shutil.copyfile(fn_, dest)
                     ret.append('{0}.{1}'.format(form, relname))
@@ -113,15 +148,15 @@ def _sync(form, saltenv=None):
             if os.path.isfile(full):
                 touched = True
                 os.remove(full)
-        #cleanup empty dirs
+        # Cleanup empty dirs
         while True:
             emptydirs = _list_emptydirs(mod_dir)
             if not emptydirs:
                 break
             for emptydir in emptydirs:
                 touched = True
-                os.rmdir(emptydir)
-    #dest mod_dir is touched? trigger reload if requested
+                shutil.rmtree(emptydir, ignore_errors=True)
+    # Dest mod_dir is touched? trigger reload if requested
     if touched:
         mod_file = os.path.join(__opts__['cachedir'], 'module_refresh')
         with salt.utils.fopen(mod_file, 'a+') as ofile:
@@ -149,7 +184,11 @@ def _list_emptydirs(rootdir):
 def update(version=None):
     '''
     Update the salt minion from the URL defined in opts['update_url']
+    SaltStack, Inc provides the latest builds here:
+    update_url: http://docs.saltstack.com/downloads/
 
+    Be aware that as of 2014-8-11 there's a bug in esky such that only the
+    latest version available in the update_url can be downloaded and installed.
 
     This feature requires the minion to be running a bdist_esky build.
 
@@ -162,31 +201,71 @@ def update(version=None):
 
     .. code-block:: bash
 
+        salt '*' saltutil.update
         salt '*' saltutil.update 0.10.3
     '''
+    ret = {}
     if not HAS_ESKY:
-        return 'Esky not available as import'
+        ret['_error'] = 'Esky not available as import'
+        return ret
     if not getattr(sys, 'frozen', False):
-        return 'Minion is not running an Esky build'
+        ret['_error'] = 'Minion is not running an Esky build'
+        return ret
     if not __salt__['config.option']('update_url'):
-        return '"update_url" not configured on this minion'
+        ret['_error'] = '"update_url" not configured on this minion'
+        return ret
     app = esky.Esky(sys.executable, __opts__['update_url'])
     oldversion = __grains__['saltversion']
-    try:
-        if not version:
+    if not version:
+        try:
             version = app.find_update()
-        if not version:
-            return 'No updates available'
+        except URLError as exc:
+            ret['_error'] = 'Could not connect to update_url. Error: {0}'.format(exc)
+            return ret
+    if not version:
+        ret['_error'] = 'No updates available'
+        return ret
+    try:
         app.fetch_version(version)
+    except EskyVersionError as exc:
+        ret['_error'] = 'Unable to fetch version {0}. Error: {1}'.format(version, exc)
+        return ret
+    try:
         app.install_version(version)
+    except EskyVersionError as exc:
+        ret['_error'] = 'Unable to install version {0}. Error: {1}'.format(version, exc)
+        return ret
+    try:
         app.cleanup()
-    except Exception as err:
-        return err
+    except Exception as exc:
+        ret['_error'] = 'Unable to cleanup. Error: {0}'.format(exc)
     restarted = {}
     for service in __opts__['update_restart_services']:
         restarted[service] = __salt__['service.restart'](service)
-    return {'comment': 'Updated from {0} to {1}'.format(oldversion, version),
-            'restarted': restarted}
+    ret['comment'] = 'Updated from {0} to {1}'.format(oldversion, version)
+    ret['restarted'] = restarted
+    return ret
+
+
+def sync_beacons(saltenv=None, refresh=True):
+    '''
+    Sync the beacons from the _beacons directory on the salt master file
+    server. This function is environment aware, pass the desired environment
+    to grab the contents of the _beacons directory, base is the default
+    environment.
+
+    .. versionadded:: 2015.5.1
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' saltutil.sync_beacons
+    '''
+    ret = _sync('beacons', saltenv)
+    if refresh:
+        refresh_beacons()
+    return ret
 
 
 def sync_modules(saltenv=None, refresh=True):
@@ -195,6 +274,25 @@ def sync_modules(saltenv=None, refresh=True):
     server. This function is environment aware, pass the desired environment
     to grab the contents of the _modules directory, base is the default
     environment.
+
+    .. important::
+
+        If this function is executed using a :py:func:`module.run
+        <salt.states.module.run>` state, the SLS file will not have access to
+        newly synced execution modules unless a ``refresh`` argument is
+        added to the state, like so:
+
+        .. code-block:: yaml
+
+            load_my_custom_module:
+              module.run:
+                - name: saltutil.sync_modules
+                - refresh: True
+
+        See :ref:`here <reloading-modules>` for a more detailed explanation of
+        why this is necessary.
+
+    .. versionadded:: 2015.5.1
 
     CLI Example:
 
@@ -304,10 +402,70 @@ def sync_outputters(saltenv=None, refresh=True):
     return ret
 
 
+def sync_utils(saltenv=None, refresh=True):
+    '''
+    Sync utility source files from the _utils directory on the salt master file
+    server. This function is environment aware, pass the desired environment
+    to grab the contents of the _utils directory, base is the default
+    environment.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' saltutil.sync_utils
+    '''
+    ret = _sync('utils', saltenv)
+    if refresh:
+        refresh_modules()
+    return ret
+
+
+def sync_log_handlers(saltenv=None, refresh=True):
+    '''
+    .. versionadded:: 2015.8.0
+
+    Sync utility source files from the _log_handlers directory on the salt master file
+    server. This function is environment aware, pass the desired environment
+    to grab the contents of the _log_handlers directory, base is the default
+    environment.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' saltutil.sync_log_handlers
+    '''
+    ret = _sync('log_handlers', saltenv)
+    if refresh:
+        refresh_modules()
+    return ret
+
+
 def sync_all(saltenv=None, refresh=True):
     '''
     Sync down all of the dynamic modules from the file server for a specific
     environment
+
+    refresh : True
+        Also refresh the execution modules and pillar data available to the minion.
+
+    .. important::
+
+        If this function is executed using a :py:func:`module.run
+        <salt.states.module.run>` state, the SLS file will not have access to
+        newly synced execution modules unless a ``refresh`` argument is
+        added to the state, like so:
+
+        .. code-block:: yaml
+
+            load_my_custom_module:
+              module.run:
+                - name: saltutil.sync_all
+                - refresh: True
+
+        See :ref:`here <reloading-modules>` for a more detailed explanation of
+        why this is necessary.
 
     CLI Example:
 
@@ -317,14 +475,36 @@ def sync_all(saltenv=None, refresh=True):
     '''
     log.debug('Syncing all')
     ret = {}
+    ret['beacons'] = sync_beacons(saltenv, False)
     ret['modules'] = sync_modules(saltenv, False)
     ret['states'] = sync_states(saltenv, False)
     ret['grains'] = sync_grains(saltenv, False)
     ret['renderers'] = sync_renderers(saltenv, False)
     ret['returners'] = sync_returners(saltenv, False)
     ret['outputters'] = sync_outputters(saltenv, False)
+    ret['utils'] = sync_utils(saltenv, False)
+    ret['log_handlers'] = sync_log_handlers(saltenv, False)
     if refresh:
         refresh_modules()
+        refresh_pillar()
+    return ret
+
+
+def refresh_beacons():
+    '''
+    Signal the minion to refresh the beacons.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' saltutil.refresh_beacons
+    '''
+    try:
+        ret = __salt__['event.fire']({}, 'beacons_refresh')
+    except KeyError:
+        log.error('Event module not available. Module refresh failed.')
+        ret = False  # Effectively a no-op, since we can't really return without an event system
     return ret
 
 
@@ -338,12 +518,23 @@ def refresh_pillar():
 
         salt '*' saltutil.refresh_pillar
     '''
-    __salt__['event.fire']({}, 'pillar_refresh')
+    try:
+        ret = __salt__['event.fire']({}, 'pillar_refresh')
+    except KeyError:
+        log.error('Event module not available. Module refresh failed.')
+        ret = False  # Effectively a no-op, since we can't really return without an event system
+    return ret
+
+pillar_refresh = refresh_pillar
 
 
-def refresh_modules():
+def refresh_modules(async=True):
     '''
     Signal the minion to refresh the module and grain data
+
+    The default is to refresh module asynchronously. To block
+    until the module refresh is complete, set the 'async' flag
+    to False.
 
     CLI Example:
 
@@ -351,7 +542,21 @@ def refresh_modules():
 
         salt '*' saltutil.refresh_modules
     '''
-    __salt__['event.fire']({}, 'module_refresh')
+    try:
+        if async:
+            #  If we're going to block, first setup a listener
+            ret = __salt__['event.fire']({}, 'module_refresh')
+        else:
+            eventer = salt.utils.event.get_event('minion', opts=__opts__, listen=True)
+            ret = __salt__['event.fire']({'notify': True}, 'module_refresh')
+            # Wait for the finish event to fire
+            log.trace('refresh_modules waiting for module refresh to complete')
+            # Blocks until we hear this event or until the timeout expires
+            eventer.get_event(tag='/salt/minion/minion_mod_complete', wait=30)
+    except KeyError:
+        log.error('Event module not available. Module refresh failed.')
+        ret = False  # Effectively a no-op, since we can't really return without an event system
+    return ret
 
 
 def is_running(fun):
@@ -383,36 +588,32 @@ def running():
 
         salt '*' saltutil.running
     '''
+    return salt.utils.minion.running(__opts__)
 
-    ret = []
-    serial = salt.payload.Serial(__opts__)
-    pid = os.getpid()
-    proc_dir = os.path.join(__opts__['cachedir'], 'proc')
-    if not os.path.isdir(proc_dir):
-        return []
-    for fn_ in os.listdir(proc_dir):
-        path = os.path.join(proc_dir, fn_)
-        with salt.utils.fopen(path, 'rb') as fp_:
-            buf = fp_.read()
-            fp_.close()
-            if buf:
-                data = serial.loads(buf)
-            else:
-                # Proc file is empty, remove
-                os.remove(path)
-                continue
-        if not isinstance(data, dict):
-            # Invalid serial object
-            continue
-        if not salt.utils.process.os_is_running(data['pid']):
-            # The process is no longer running, clear out the file and
-            # continue
-            os.remove(path)
-            continue
-        if data.get('pid') == pid:
-            continue
-        ret.append(data)
-    return ret
+
+def clear_cache():
+    '''
+    Forcibly removes all caches on a minion.
+
+    .. versionadded:: 2014.7.0
+
+    WARNING: The safest way to clear a minion cache is by first stopping
+    the minion and then deleting the cache files before restarting it.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' saltutil.clear_cache
+    '''
+    for root, dirs, files in salt.utils.safe_walk(__opts__['cachedir'], followlinks=False):
+        for name in files:
+            try:
+                os.remove(os.path.join(root, name))
+            except OSError as exc:
+                log.error('Attempt to clear cache with saltutil.clear_cache FAILED with: {0}'.format(exc))
+                return False
+    return True
 
 
 def find_job(jid):
@@ -431,6 +632,39 @@ def find_job(jid):
     return {}
 
 
+def find_cached_job(jid):
+    '''
+    Return the data for a specific cached job id
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' saltutil.find_cached_job <job id>
+    '''
+    serial = salt.payload.Serial(__opts__)
+    proc_dir = os.path.join(__opts__['cachedir'], 'minion_jobs')
+    job_dir = os.path.join(proc_dir, str(jid))
+    if not os.path.isdir(job_dir):
+        return
+    path = os.path.join(job_dir, 'return.p')
+    with salt.utils.fopen(path, 'rb') as fp_:
+        buf = fp_.read()
+        fp_.close()
+        if buf:
+            try:
+                data = serial.loads(buf)
+            except NameError:
+                # msgpack error in salt-ssh
+                return
+        else:
+            return
+    if not isinstance(data, dict):
+        # Invalid serial object
+        return
+    return data
+
+
 def signal_job(jid, sig):
     '''
     Sends a signal to the named salt job's process
@@ -445,6 +679,9 @@ def signal_job(jid, sig):
         if data['jid'] == jid:
             try:
                 os.kill(int(data['pid']), sig)
+                if 'child_pids' in data:
+                    for pid in data['child_pids']:
+                        os.kill(int(pid), sig)
                 return 'Signal {0} sent to job {1} at pid {2}'.format(
                         int(sig),
                         jid,
@@ -482,7 +719,9 @@ def kill_job(jid):
 
         salt '*' saltutil.kill_job <job id>
     '''
-    return signal_job(jid, signal.SIGKILL)
+    # Some OS's (Win32) don't have SIGKILL, so use salt_SIGKILL which is set to
+    # an appropriate value for the operating system this is running on.
+    return signal_job(jid, salt_SIGKILL)
 
 
 def regen_keys():
@@ -501,16 +740,19 @@ def regen_keys():
             os.remove(path)
         except os.error:
             pass
-    time.sleep(60)
-    sreq = salt.payload.SREQ(__opts__['master_uri'])
-    auth = salt.crypt.SAuth(__opts__)
+    # TODO: move this into a channel function? Or auth?
+    # create a channel again, this will force the key regen
+    channel = salt.transport.Channel.factory(__opts__)
 
 
-def revoke_auth():
+def revoke_auth(preserve_minion_cache=False):
     '''
     The minion sends a request to the master to revoke its own key.
     Note that the minion session will be revoked and the minion may
     not be able to return the result of this command back to the master.
+
+    If the 'preserve_minion_cache' flag is set to True, the master
+    cache for this minion will not be removed.
 
     CLI Example:
 
@@ -518,21 +760,40 @@ def revoke_auth():
 
         salt '*' saltutil.revoke_auth
     '''
-    # sreq = salt.payload.SREQ(__opts__['master_uri'])
-    auth = salt.crypt.SAuth(__opts__)
-    tok = auth.gen_token('salt')
+    channel = salt.transport.Channel.factory(__opts__)
+    tok = channel.auth.gen_token('salt')
     load = {'cmd': 'revoke_auth',
             'id': __opts__['id'],
-            'tok': tok}
+            'tok': tok,
+            'preserve_minion_cache': preserve_minion_cache}
 
-    sreq = salt.transport.Channel.factory(__opts__)
     try:
-        sreq.send(load)
-        # return auth.crypticle.loads(
-        #         sreq.send('aes', auth.crypticle.dumps(load), 1))
+        return channel.send(load)
     except SaltReqTimeoutError:
         return False
-    return False
+
+
+def _get_ssh_or_api_client(cfgfile, ssh=False):
+    if ssh:
+        client = salt.client.ssh.client.SSHClient(cfgfile)
+    else:
+        client = salt.client.get_local_client(cfgfile)
+    return client
+
+
+def _exec(client, tgt, fun, arg, timeout, expr_form, ret, kwarg, **kwargs):
+    ret = {}
+    seen = 0
+    for ret_comp in client.cmd_iter(
+            tgt, fun, arg, timeout, expr_form, ret, kwarg, **kwargs):
+        ret.update(ret_comp)
+        seen += 1
+        # ret can be empty, so we cannot len the whole return dict
+        if expr_form == 'list' and len(tgt) == seen:
+            # do not wait for timeout when explicit list matching
+            # and all results are there
+            break
+    return ret
 
 
 def cmd(tgt,
@@ -553,21 +814,22 @@ def cmd(tgt,
 
         salt '*' saltutil.cmd
     '''
-    if ssh:
-        client = salt.client.SSHClient(__opts__['conf_file'])
-    else:
-        client = salt.client.LocalClient(__opts__['conf_file'])
-    ret = {}
-    for ret_comp in client.cmd_iter(
-            tgt,
-            fun,
-            arg,
-            timeout,
-            expr_form,
-            ret,
-            kwarg,
-            **kwargs):
-        ret.update(ret_comp)
+    cfgfile = __opts__['conf_file']
+    client = _get_ssh_or_api_client(cfgfile, ssh)
+    ret = _exec(
+        client, tgt, fun, arg, timeout, expr_form, ret, kwarg, **kwargs)
+    # if return is empty, we may have not used the right conf,
+    # try with the 'minion relative master configuration counter part
+    # if available
+    master_cfgfile = '{0}master'.format(cfgfile[:-6])  # remove 'minion'
+    if (
+        not ret
+        and cfgfile.endswith('{0}{1}'.format(os.path.sep, 'minion'))
+        and os.path.exists(master_cfgfile)
+    ):
+        client = _get_ssh_or_api_client(master_cfgfile, ssh)
+        ret = _exec(
+            client, tgt, fun, arg, timeout, expr_form, ret, kwarg, **kwargs)
     return ret
 
 
@@ -587,12 +849,12 @@ def cmd_iter(tgt,
 
     .. code-block:: bash
 
-        salt '*' saltutil.cmd
+        salt '*' saltutil.cmd_iter
     '''
     if ssh:
-        client = salt.client.SSHClient(__opts__['conf_file'])
+        client = salt.client.ssh.client.SSHClient(__opts__['conf_file'])
     else:
-        client = salt.client.LocalClient(__opts__['conf_file'])
+        client = salt.client.get_local_client(__opts__['conf_file'])
     for ret in client.cmd_iter(
             tgt,
             fun,
@@ -603,3 +865,102 @@ def cmd_iter(tgt,
             kwarg,
             **kwargs):
         yield ret
+
+
+def runner(fun, **kwargs):
+    '''
+    Execute a runner module (this function must be run on the master)
+
+    .. versionadded:: 2014.7
+
+    name
+        The name of the function to run
+    kwargs
+        Any keyword arguments to pass to the runner function
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' saltutil.runner jobs.list_jobs
+    '''
+    kwargs = salt.utils.clean_kwargs(**kwargs)
+
+    if 'master_job_cache' not in __opts__:
+        master_config = os.path.join(os.path.dirname(__opts__['conf_file']),
+                                     'master')
+        master_opts = salt.config.master_config(master_config)
+        rclient = salt.runner.RunnerClient(master_opts)
+    else:
+        rclient = salt.runner.RunnerClient(__opts__)
+
+    return rclient.cmd(fun, [], kwarg=kwargs)
+
+
+def wheel(fun, **kwargs):
+    '''
+    Execute a wheel module (this function must be run on the master)
+
+    .. versionadded:: 2014.7
+
+    name
+        The name of the function to run
+    kwargs
+        Any keyword arguments to pass to the wheel function
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' saltutil.wheel key.accept match=jerry
+    '''
+    wclient = salt.wheel.WheelClient(__opts__)
+    return wclient.cmd(fun, kwarg=kwargs)
+
+
+# this is the only way I could figure out how to get the REAL file_roots
+# __opt__['file_roots'] is set to  __opt__['pillar_root']
+class _MMinion(object):
+    def __new__(cls, saltenv, reload_env=False):
+        # this is to break out of salt.loaded.int and make this a true singleton
+        # hack until https://github.com/saltstack/salt/pull/10273 is resolved
+        # this is starting to look like PHP
+        global _mminions  # pylint: disable=W0601
+        if '_mminions' not in globals():
+            _mminions = {}
+        if saltenv not in _mminions or reload_env:
+            opts = copy.deepcopy(__opts__)
+            del opts['file_roots']
+            # grains at this point are in the context of the minion
+            global __grains__  # pylint: disable=W0601
+            grains = copy.deepcopy(__grains__)
+            m = salt.minion.MasterMinion(opts)
+
+            # this assignment is so that the rest of fxns called by salt still
+            # have minion context
+            __grains__ = grains
+
+            # this assignment is so that fxns called by mminion have minion
+            # context
+            m.opts['grains'] = grains
+
+            env_roots = m.opts['file_roots'][saltenv]
+            m.opts['module_dirs'] = [fp + '/_modules' for fp in env_roots]
+            m.gen_modules()
+            _mminions[saltenv] = m
+        return _mminions[saltenv]
+
+
+def mmodule(saltenv, fun, *args, **kwargs):
+    '''
+    Loads minion modules from an environment so that they can be used in pillars
+    for that environment
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' saltutil.mmodule base test.ping
+    '''
+    mminion = _MMinion(saltenv)
+    return mminion.functions[fun](*args, **kwargs)

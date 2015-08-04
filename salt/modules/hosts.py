@@ -4,11 +4,16 @@ Manage the information in the hosts file
 '''
 
 # Import python libs
+from __future__ import absolute_import
 import os
 
 # Import salt libs
 import salt.utils
 import salt.utils.odict as odict
+
+# Import 3rd-party libs
+import salt.ext.six as six
+from salt.ext.six.moves import range  # pylint: disable=import-error,no-name-in-module,redefined-builtin
 
 
 # pylint: disable=C0103
@@ -23,10 +28,24 @@ def __get_hosts_filename():
     return __salt__['config.option']('hosts.file')
 
 
+def _get_or_create_hostfile():
+    '''
+    Wrapper of __get_hosts_filename but create host file if it
+    does not exist.
+    '''
+    hfn = __get_hosts_filename()
+    if hfn is None:
+        hfn = ''
+    if not os.path.exists(hfn):
+        salt.utils.fopen(hfn, 'w').close()
+    return hfn
+
+
 def _list_hosts():
     '''
     Return the hosts found in the hosts file in as an OrderedDict
     '''
+    count = 0
     hfn = __get_hosts_filename()
     ret = odict.OrderedDict()
     if not os.path.isfile(hfn):
@@ -37,7 +56,11 @@ def _list_hosts():
             if not line:
                 continue
             if line.startswith('#'):
+                ret.setdefault('comment-{0}'.format(count), []).extend(line)
+                count += 1
                 continue
+            if '#' in line:
+                line = line[:line.index('#')].strip()
             comps = line.split()
             ip = comps.pop(0)
             ret.setdefault(ip, []).extend(comps)
@@ -122,7 +145,7 @@ def set_host(ip, alias):
 
         salt '*' hosts.set_host <ip> <alias>
     '''
-    hfn = __get_hosts_filename()
+    hfn = _get_or_create_hostfile()
     ovr = False
     if not os.path.isfile(hfn):
         return False
@@ -163,7 +186,7 @@ def rm_host(ip, alias):
     '''
     if not has_pair(ip, alias):
         return True
-    hfn = __get_hosts_filename()
+    hfn = _get_or_create_hostfile()
     lines = salt.utils.fopen(hfn).readlines()
     for ind in range(len(lines)):
         tmpline = lines[ind].strip()
@@ -173,11 +196,11 @@ def rm_host(ip, alias):
             continue
         comps = tmpline.split()
         if comps[0] == ip:
-            newline = '{0}\t'.format(comps[0])
+            newline = '{0}\t\t'.format(comps[0])
             for existing in comps[1:]:
                 if existing == alias:
                     continue
-                newline += '\t{0}'.format(existing)
+                newline += ' {0}'.format(existing)
             if newline.strip() == ip:
                 # No aliases exist for the line, make it empty
                 lines[ind] = ''
@@ -200,7 +223,7 @@ def add_host(ip, alias):
 
         salt '*' hosts.add_host <ip> <alias>
     '''
-    hfn = __get_hosts_filename()
+    hfn = _get_or_create_hostfile()
     if not os.path.isfile(hfn):
         return False
 
@@ -208,24 +231,35 @@ def add_host(ip, alias):
         return True
 
     hosts = _list_hosts()
-    hosts.setdefault(ip, []).append(alias)
+    inserted = False
+    for i, h in six.iteritems(hosts):
+        for j in range(len(h)):
+            if h[j].startswith('#') and i == ip:
+                h.insert(j, alias)
+                inserted = True
+    if not inserted:
+        hosts.setdefault(ip, []).append(alias)
     _write_hosts(hosts)
     return True
 
 
 def _write_hosts(hosts):
     lines = []
-    for ip, aliases in hosts.iteritems():
-        line = '{0}\t\t{1}'.format(
-            ip,
-            '\t\t'.join(aliases)
-            )
+    for ip, aliases in six.iteritems(hosts):
+        if ip:
+            if ip.startswith('comment'):
+                line = ''.join(aliases)
+            else:
+                line = '{0}\t\t{1}'.format(
+                    ip,
+                    ' '.join(aliases)
+                    )
         lines.append(line)
 
-    hfn = __get_hosts_filename()
+    hfn = _get_or_create_hostfile()
     with salt.utils.fopen(hfn, 'w+') as ofile:
-        ofile.write(
-            '\n'.join(
-                [l.strip() for l in lines if l.strip()]
-            )
-        )
+        for line in lines:
+            if line.strip():
+                # /etc/hosts needs to end with EOL so that some utils that read
+                # it do not break
+                ofile.write('{0}\n'.format(line.strip()))
